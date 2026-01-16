@@ -1,0 +1,57 @@
+# ========================================
+# SAVR Environment Variables Template
+# ========================================
+#
+# Copy this file to .env and fill in your actual values
+# DO NOT commit .env to git (already in .gitignore)
+#
+# ========================================
+
+# ────────────────────────────────────────
+# Supabase Configuration
+# ────────────────────────────────────────
+EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
+
+# ────────────────────────────────────────
+# OpenAI Configuration (for AI features)
+# ────────────────────────────────────────
+EXPO_PUBLIC_OPENAI_API_KEY=sk-your-openai-key-here
+
+# ────────────────────────────────────────
+# RevenueCat Configuration (for subscriptions)
+# Get from: https://app.revenuecat.com
+# ────────────────────────────────────────
+EXPO_PUBLIC_REVENUECAT_IOS_KEY=appl_YOUR_IOS_KEY_HERE
+EXPO_PUBLIC_REVENUECAT_ANDROID_KEY=goog_YOUR_ANDROID_KEY_HERE
+
+# ────────────────────────────────────────
+# Image Services (for recipe images)
+# ────────────────────────────────────────
+# Get from: https://unsplash.com/developers
+UNSPLASH_ACCESS_KEY=22_07O2VKOqb5TJ5J8qvGkdOsVhey4Axf1_PJJSjFUE
+# Or use the public version:
+# EXPO_PUBLIC_UNSPLASH_ACCESS_KEY=your-unsplash-access-key-here
+
+# ────────────────────────────────────────
+# Optional: Additional Services
+# ────────────────────────────────────────
+# EXPO_PUBLIC_FLIPP_API_KEY=your-flipp-key
+# EXPO_PUBLIC_ANALYTICS_KEY=your-analytics-key
+
+# ========================================
+# SETUP CHECKLIST
+# ========================================
+#
+# [ ] Created Supabase project
+# [ ] Added Supabase URL & key
+# [ ] Created OpenAI account
+# [ ] Added OpenAI API key
+# [ ] Created RevenueCat account
+# [ ] Added RevenueCat iOS key
+# [ ] Added RevenueCat Android key
+# [ ] Renamed this file to .env
+# [ ] Verified .env is in .gitignore
+#
+# ========================================
+

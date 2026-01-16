@@ -1,0 +1,16 @@
+# RevenueCat API Keys Template
+# Copy these lines to your .env file
+
+# iOS API Key (Apple App Store)
+EXPO_PUBLIC_REVENUECAT_IOS_API_KEY=your_ios_api_key_here
+
+# Android API Key (Google Play Store)  
+EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY=your_android_api_key_here
+
+# Web/Browser API Key (for Expo Go testing)
+EXPO_PUBLIC_REVENUECAT_WEB_API_KEY=your_web_api_key_here
+
+# Example of what it should look like with real keys:
+# EXPO_PUBLIC_REVENUECAT_IOS_API_KEY=appl_abc123def456ghi789jkl012mno345pqr
+# EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY=goog_xyz789wvu456tsr123qpo890nml567kji
+# EXPO_PUBLIC_REVENUECAT_WEB_API_KEY=rcb_browser_abc123def456ghi789jkl012

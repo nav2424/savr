@@ -1,0 +1,777 @@
+// SAVR Pantry Item Formatter - Unified formatting for all pantry items
+// Ensures consistent emoji/image assignment and categorization across all import methods
+
+export interface FormattedPantryItem {
+  name: string
+  icon: string  // Emoji for the item
+  category: string
+  quantity: number
+  unit: string
+  location: 'fridge' | 'freezer' | 'pantry'
+  barcode?: string
+  notes?: string
+  expiry_date?: string
+  price?: number
+  image_url?: string
+}
+
+/**
+ * Comprehensive emoji mapping for pantry items
+ * Maps item names (and variations) to specific emojis
+ */
+const ITEM_EMOJI_MAP: Record<string, string> = {
+  // Fruits
+  'apple': '🍎', 'apples': '🍎', 'green apple': '🍏',
+  'banana': '🍌', 'bananas': '🍌',
+  'orange': '🍊', 'oranges': '🍊', 'tangerine': '🍊',
+  'lemon': '🍋', 'lemons': '🍋',
+  'lime': '🍋', 'limes': '🍋',
+  'strawberry': '🍓', 'strawberries': '🍓',
+  'cherry': '🍒', 'cherries': '🍒',
+  'grape': '🍇', 'grapes': '🍇',
+  'watermelon': '🍉',
+  'peach': '🍑', 'peaches': '🍑',
+  'pear': '🍐', 'pears': '🍐',
+  'pineapple': '🍍',
+  'mango': '🥭', 'mangoes': '🥭', 'mangos': '🥭',
+  'avocado': '🥑', 'avocados': '🥑',
+  'kiwi': '🥝',
+  'blueberry': '🫐', 'blueberries': '🫐',
+  'coconut': '🥥',
+  
+  // Vegetables
+  'tomato': '🍅', 'tomatoes': '🍅',
+  'broccoli': '🥦',
+  'carrot': '🥕', 'carrots': '🥕',
+  'corn': '🌽',
+  'pepper': '🫑', 'peppers': '🫑', 'bell pepper': '🫑',
+  'cucumber': '🥒', 'cucumbers': '🥒',
+  'lettuce': '🥬', 'salad': '🥗', 'greens': '🥬',
+  'spinach': '🥬',
+  'potato': '🥔', 'potatoes': '🥔',
+  'onion': '🧅', 'onions': '🧅',
+  'garlic': '🧄',
+  'eggplant': '🍆', 'aubergine': '🍆',
+  'mushroom': '🍄', 'mushrooms': '🍄',
+  'peas': '🫛',
+  'beans': '🫘',
+  
+  // Dairy & Eggs
+  'milk': '🥛',
+  'cheese': '🧀',
+  'butter': '🧈',
+  'egg': '🥚', 'eggs': '🥚',
+  'yogurt': '🥛', 'yoghurt': '🥛',
+  'cream': '🥛', 'heavy cream': '🥛',
+  'sour cream': '🥛',
+  'ice cream': '🍦',
+  
+  // Meat & Seafood
+  'chicken': '🍗', 'poultry': '🍗',
+  'beef': '🥩', 'steak': '🥩',
+  'pork': '🥩',
+  'bacon': '🥓',
+  'ham': '🍖',
+  'turkey': '🍗',
+  'fish': '🐟',
+  'salmon': '🐟',
+  'tuna': '🐟',
+  'shrimp': '🦐',
+  'crab': '🦀',
+  'lobster': '🦞',
+  
+  // Bakery & Grains
+  'bread': '🍞',
+  'baguette': '🥖',
+  'croissant': '🥐',
+  'bagel': '🥯',
+  'rice': '🍚',
+  'pasta': '🍝',
+  'cereal': '🥣',
+  'oatmeal': '🥣', 'oats': '🥣',
+  'pancake': '🥞', 'pancakes': '🥞',
+  'waffle': '🧇', 'waffles': '🧇',
+  
+  // Beverages
+  'coffee': '☕', 'espresso': '☕',
+  'tea': '🍵',
+  'water': '💧', 'bottled water': '💧',
+  'juice': '🧃',
+  'soda': '🥤', 'pop': '🥤', 'soft drink': '🥤',
+  'beer': '🍺', 'lager': '🍺',
+  'wine': '🍷',
+  'cocktail': '🍹',
+  
+  // Snacks & Sweets
+  'cookie': '🍪', 'cookies': '🍪',
+  'chocolate': '🍫',
+  'candy': '🍬',
+  'chips': '🥔', 'crisps': '🥔', 'potato chips': '🥔',
+  'popcorn': '🍿',
+  'pretzel': '🥨', 'pretzels': '🥨',
+  'donut': '🍩', 'doughnut': '🍩',
+  'cake': '🍰',
+  'pie': '🥧',
+  'honey': '🍯',
+  
+  // Condiments & Sauces
+  'ketchup': '🍅', 'catsup': '🍅',
+  'mustard': '🌭',
+  'mayonnaise': '🥚', 'mayo': '🥚',
+  'hot sauce': '🌶️',
+  'soy sauce': '🥢',
+  'olive oil': '🫒', 'oil': '🫒',
+  'vinegar': '🍶',
+  'salt': '🧂',
+  'ground pepper': '🧂', 'black pepper': '🧂',
+  'sugar': '🍚',
+  'flour': '🌾',
+  
+  // Canned & Packaged
+  'soup': '🥫', 'canned soup': '🥫',
+  'canned beans': '🫘', 'black beans': '🫘', 'kidney beans': '🫘',
+  'canned tuna': '🐟',
+  
+  // Prepared Foods
+  'pizza': '🍕',
+  'burger': '🍔', 'hamburger': '🍔',
+  'hot dog': '🌭', 'hotdog': '🌭',
+  'taco': '🌮', 'tacos': '🌮',
+  'burrito': '🌯',
+  'sandwich': '🥪', 'sub': '🥪',
+  'sushi': '🍣',
+  'ramen': '🍜', 'noodles': '🍜',
+  
+  // Nuts & Seeds
+  'peanut': '🥜', 'peanuts': '🥜',
+  'almond': '🌰', 'almonds': '🌰',
+  'walnut': '🌰', 'walnuts': '🌰',
+  'cashew': '🥜', 'cashews': '🥜',
+}
+
+/**
+ * Category-based emoji fallbacks
+ * When specific item isn't found, use category-based emoji
+ */
+const CATEGORY_EMOJI_MAP: Record<string, string> = {
+  'Produce': '🥦',
+  'Meat, Poultry & Seafood': '🍗',
+  'Dairy & Eggs': '🥛',
+  'Grains, Bread & Pasta': '🌾',
+  'Condiments, Sauces & Spreads': '🥫',
+  'Pantry Staples & Essentials': '🧂',
+  'Plant-Based Proteins & Legumes': '🍱',
+  'Snacks, Sweets & Desserts': '🍫',
+  'Beverages': '🥤',
+  'Frozen': '❄️',
+  'Non-Food / Misc': '📦',
+}
+
+/**
+ * Standardized category names
+ * Ensures consistent category naming across all import methods
+ */
+const STANDARD_CATEGORIES = [
+  'Produce',
+  'Meat, Poultry & Seafood',
+  'Dairy & Eggs',
+  'Grains, Bread & Pasta',
+  'Condiments, Sauces & Spreads',
+  'Pantry Staples & Essentials',
+  'Plant-Based Proteins & Legumes',
+  'Snacks, Sweets & Desserts',
+  'Beverages',
+  'Frozen',
+  'Non-Food / Misc',
+]
+
+/**
+ * Normalizes category names to standard format
+ */
+export function normalizeCategory(category: string): string {
+  if (!category) return 'Other'
+  
+  const lower = category
+    .toString()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+
+  const standardMatch = STANDARD_CATEGORIES.find(standard =>
+    standard.toLowerCase() === lower
+  )
+  if (standardMatch) {
+    return standardMatch
+  }
+  
+  // Direct mapping
+  const categoryMap: Record<string, string> = {
+    'produce': 'Produce',
+    'fruits': 'Produce',
+    'fruit': 'Produce',
+    'vegetables': 'Produce',
+    'vegetable': 'Produce',
+    'veggies': 'Produce',
+    'greens': 'Produce',
+    'herbs': 'Produce',
+    'fresh produce': 'Produce',
+    
+    'meat': 'Meat, Poultry & Seafood',
+    'meats': 'Meat, Poultry & Seafood',
+    'seafood': 'Meat, Poultry & Seafood',
+    'meat & seafood': 'Meat, Poultry & Seafood',
+    'meat and seafood': 'Meat, Poultry & Seafood',
+    'poultry': 'Meat, Poultry & Seafood',
+    'fish': 'Meat, Poultry & Seafood',
+    
+    'dairy': 'Dairy & Eggs',
+    'dairy & eggs': 'Dairy & Eggs',
+    'dairy and eggs': 'Dairy & Eggs',
+    'eggs': 'Dairy & Eggs',
+    'egg': 'Dairy & Eggs',
+    'cheese': 'Dairy & Eggs',
+    'yogurt': 'Dairy & Eggs',
+    'yoghurt': 'Dairy & Eggs',
+    'yogourt': 'Dairy & Eggs',
+    'butter': 'Dairy & Eggs',
+    
+    'bakery': 'Grains, Bread & Pasta',
+    'bread': 'Grains, Bread & Pasta',
+    'grains': 'Grains, Bread & Pasta',
+    'grains & bread': 'Grains, Bread & Pasta',
+    'grains and bread': 'Grains, Bread & Pasta',
+    'cereals': 'Grains, Bread & Pasta',
+    'tortillas': 'Grains, Bread & Pasta',
+    'flatbreads': 'Grains, Bread & Pasta',
+    'wraps': 'Grains, Bread & Pasta',
+    'pasta': 'Grains, Bread & Pasta',
+    
+    'snacks': 'Snacks, Sweets & Desserts',
+    'snack': 'Snacks, Sweets & Desserts',
+    'sweets': 'Snacks, Sweets & Desserts',
+    'desserts': 'Snacks, Sweets & Desserts',
+    'dessert': 'Snacks, Sweets & Desserts',
+    'treats': 'Snacks, Sweets & Desserts',
+    'bars': 'Snacks, Sweets & Desserts',
+    
+    'condiments': 'Condiments, Sauces & Spreads',
+    'condiment': 'Condiments, Sauces & Spreads',
+    'sauces': 'Condiments, Sauces & Spreads',
+    'sauce': 'Condiments, Sauces & Spreads',
+    'seasonings': 'Condiments, Sauces & Spreads',
+    'spices': 'Condiments, Sauces & Spreads',
+    'syrups': 'Condiments, Sauces & Spreads',
+    'syrup': 'Condiments, Sauces & Spreads',
+    'spread': 'Condiments, Sauces & Spreads',
+    'spreads': 'Condiments, Sauces & Spreads',
+    'pesto': 'Condiments, Sauces & Spreads',
+    
+    'plant-based': 'Plant-Based Proteins & Legumes',
+    'plant based': 'Plant-Based Proteins & Legumes',
+    'plant-based protein': 'Plant-Based Proteins & Legumes',
+    'vegetarian protein': 'Plant-Based Proteins & Legumes',
+    'veggie protein': 'Plant-Based Proteins & Legumes',
+    'meat alternatives': 'Plant-Based Proteins & Legumes',
+    'meat alternative': 'Plant-Based Proteins & Legumes',
+    'tofu': 'Plant-Based Proteins & Legumes',
+    'tempeh': 'Plant-Based Proteins & Legumes',
+    'seitan': 'Plant-Based Proteins & Legumes',
+    'legumes': 'Plant-Based Proteins & Legumes',
+    'lentils': 'Plant-Based Proteins & Legumes',
+    'chickpeas': 'Plant-Based Proteins & Legumes',
+    'beans': 'Plant-Based Proteins & Legumes',
+    
+    'pantry': 'Pantry Staples & Essentials',
+    'pantry staples': 'Pantry Staples & Essentials',
+    'pantry items': 'Pantry Staples & Essentials',
+    'pantry staple': 'Pantry Staples & Essentials',
+    'pantry item': 'Pantry Staples & Essentials',
+    'canned goods': 'Pantry Staples & Essentials',
+    'dry goods': 'Pantry Staples & Essentials',
+    'canned': 'Pantry Staples & Essentials',
+    'packaged': 'Pantry Staples & Essentials',
+    'shelf-stable': 'Pantry Staples & Essentials',
+    'shelf stable': 'Pantry Staples & Essentials',
+    'cooking essentials': 'Pantry Staples & Essentials',
+    'baking': 'Pantry Staples & Essentials',
+    'oils': 'Pantry Staples & Essentials',
+    'oil': 'Pantry Staples & Essentials',
+    
+    'beverages': 'Beverages',
+    'drinks': 'Beverages',
+    'drink': 'Beverages',
+    'coffee': 'Beverages',
+    'tea': 'Beverages',
+    'soda': 'Beverages',
+    'juice': 'Beverages',
+    
+    'frozen': 'Frozen',
+    'frozen foods': 'Frozen',
+    'frozen food': 'Frozen',
+    'frozen meals': 'Frozen',
+    'frozen meal': 'Frozen',
+    'frozen entree': 'Frozen',
+    'frozen entrees': 'Frozen',
+    'frozen dinner': 'Frozen',
+    'frozen dinners': 'Frozen',
+    
+    'non-food': 'Non-Food / Misc',
+    'non food': 'Non-Food / Misc',
+    'misc': 'Non-Food / Misc',
+    'other': 'Non-Food / Misc',
+    'miscellaneous': 'Non-Food / Misc',
+    'household': 'Non-Food / Misc',
+    'supplies': 'Non-Food / Misc',
+    'cleaning': 'Non-Food / Misc',
+    'paper goods': 'Non-Food / Misc',
+    'parchment': 'Non-Food / Misc',
+    'foil': 'Non-Food / Misc',
+    'wrap': 'Non-Food / Misc',
+    'paper': 'Non-Food / Misc',
+    'bags': 'Non-Food / Misc',
+  }
+  
+  return categoryMap[lower] || 'Non-Food / Misc'
+}
+
+/**
+ * Get emoji for an item based on its name and category
+ */
+export function getItemEmoji(itemName: string, category?: string): string {
+  if (!itemName) return '📦'
+  
+  const lower = itemName.toLowerCase().trim()
+  
+  // Check for exact match or partial match in emoji map
+  for (const [key, emoji] of Object.entries(ITEM_EMOJI_MAP)) {
+    if (lower === key || lower.includes(key) || key.includes(lower)) {
+      return emoji
+    }
+  }
+  
+  // If no specific emoji found, use category-based emoji
+  if (category) {
+    const normalizedCategory = normalizeCategory(category)
+    return CATEGORY_EMOJI_MAP[normalizedCategory] || '📦'
+  }
+  
+  return '📦'
+}
+
+/**
+ * Determines storage location based on item category and name
+ * This is the main function used for location detection
+ */
+export function determineStorageLocation(
+  itemName: string, 
+  category: string,
+  existingLocation?: 'fridge' | 'freezer' | 'pantry'
+): 'fridge' | 'freezer' | 'pantry' {
+  // Use existing location if provided
+  if (existingLocation) {
+    return existingLocation
+  }
+  
+  const lower = itemName
+    .toString()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+  const normalizedCategory = normalizeCategory(category)
+  
+  // Frozen items - check first
+  if (lower.includes('frozen') || lower.includes('ice cream')) {
+    return 'freezer'
+  }
+  
+  // Fridge items - ALL produce goes in fridge
+  if (normalizedCategory === 'Produce') {
+    return 'fridge'
+  }
+  
+  // ALL Dairy & Eggs go in fridge
+  if (normalizedCategory === 'Dairy & Eggs') {
+    return 'fridge'
+  }
+  
+  // ALL Meat, Poultry & Seafood go in fridge (unless frozen)
+  if (normalizedCategory === 'Meat, Poultry & Seafood') {
+    return 'fridge'
+  }
+  
+  // Plant-based proteins - most go in fridge, but check for shelf-stable
+  if (normalizedCategory === 'Plant-Based Proteins & Legumes') {
+    // Canned or dried legumes go in pantry
+    if (lower.includes('canned') || lower.includes('dried') || lower.includes('dry')) {
+      return 'pantry'
+    }
+    // Fresh tofu, tempeh, etc. go in fridge
+    return 'fridge'
+  }
+  
+  // Fresh/refrigerated keywords
+  if (lower.includes('fresh') || lower.includes('refrigerated')) {
+    return 'fridge'
+  }
+  
+  // Default to pantry for shelf-stable items (Grains, Bread & Pasta, Pantry Staples, etc.)
+  return 'pantry'
+}
+
+/**
+ * Smart category detection based on item name
+ */
+export function detectCategoryFromName(itemName: string): string {
+  const lower = itemName
+    .toString()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+  
+  // Produce detection
+  const produceKeywords = [
+    'apple', 'apples', 'banana', 'bananas', 'orange', 'oranges', 'lemon', 'lemons',
+    'lime', 'limes', 'strawberry', 'strawberries', 'cherry', 'cherries', 'grape', 'grapes',
+    'watermelon', 'peach', 'peaches', 'pear', 'pears', 'pineapple', 'mango', 'mangoes',
+    'avocado', 'avocados', 'kiwi', 'blueberry', 'blueberries', 'raspberry', 'raspberries', 'coconut',
+    'tomato', 'tomatoes', 'broccoli', 'carrot', 'carrots', 'corn', 'pepper', 'peppers',
+    'cucumber', 'cucumbers', 'lettuce', 'salad', 'greens', 'spinach', 'potato', 'potatoes',
+    'onion', 'onions', 'shallot', 'shallots', 'garlic', 'eggplant', 'mushroom', 'mushrooms', 'peas',
+    'organic', 'fresh', 'fruit', 'vegetable', 'veggie', 'produce', 'arugula', 'spring mix'
+  ]
+  
+  // Dairy detection
+  const dairyKeywords = [
+    'milk', 'cheese', 'butter', 'egg', 'eggs', 'yogurt', 'yoghurt', 'yogourt', 'cream',
+    'sour cream', 'heavy cream', 'ice cream', 'dairy', 'lactose'
+  ]
+  
+  // Meat, poultry, seafood detection - comprehensive list
+  const meatKeywords = [
+    'chicken', 'beef', 'steak', 'steaks', 'ribeye', 'sirloin', 'filet', 't-bone', 'porterhouse',
+    'pork', 'bacon', 'ham', 'turkey', 'poultry', 'duck', 'lamb', 'veal',
+    'fish', 'salmon', 'tuna', 'shrimp', 'crab', 'lobster', 'meat', 'seafood',
+    'ground beef', 'ground pork', 'ground turkey', 'ground chicken',
+    'chicken breast', 'chicken thighs', 'chicken wings', 'chicken drumsticks',
+    'pork chops', 'pork tenderloin', 'pork shoulder', 'pork ribs',
+    'beef roast', 'beef brisket', 'beef ribs', 'beef tenderloin',
+    'cod', 'tilapia', 'mahi mahi', 'halibut', 'trout', 'mackerel',
+    'scallops', 'mussels', 'clams', 'oysters', 'squid', 'octopus'
+  ]
+  
+  // Grain & bread detection
+  const grainKeywords = [
+    'bread', 'baguette', 'croissant', 'bagel', 'pancake', 'pancakes',
+    'waffle', 'waffles', 'muffin', 'muffins', 'cake', 'pie', 'bakery',
+    'rice', 'pasta', 'noodles', 'cereal', 'oatmeal', 'oats', 'quinoa', 'barley',
+    'wheat', 'flour', 'grains', 'grain', 'tortilla', 'tortillas',
+    'flatbread', 'wrap', 'wraps'
+  ]
+  
+  // Plant-based detection
+  const plantBasedKeywords = [
+    'tofu', 'tempeh', 'seitan', 'jackfruit', 'chickpea', 'chickpeas', 'lentil', 'lentils',
+    'legume', 'legumes', 'edamame', 'falafel', 'veggie burger', 'veggie patties',
+    'bean', 'beans', 'black bean', 'black beans', 'kidney bean', 'kidney beans', 'pinto bean', 'pinto beans',
+    'plant-based', 'plant based', 'vegetarian protein', 'meatless', 'meat alternative',
+    'beyond meat', 'impossible', 'soy protein'
+  ]
+  
+  // Beverages detection
+  const beverageKeywords = [
+    'coffee', 'tea', 'water', 'juice', 'soda', 'pop', 'beer', 'wine',
+    'cocktail', 'drink', 'beverage', 'smoothie'
+  ]
+  
+  // Frozen detection - check for frozen foods, pizzas, frozen meals
+  const frozenKeywords = [
+    'frozen', 'ice cream', 'frozen vegetables', 'frozen fruit', 'frozen meal',
+    'frozen pizza', 'pizza', 'pizzas', 'frozen entree', 'frozen dinner',
+    'frozen breakfast', 'frozen lunch', 'frozen snack', 'frozen appetizer'
+  ]
+  
+  // Snacks detection
+  const snackKeywords = [
+    'cookie', 'cookies', 'chocolate', 'candy', 'chips', 'crisps', 'popcorn',
+    'pretzel', 'pretzels', 'donut', 'doughnut', 'snack', 'sweet', 'dessert',
+    'brownie', 'brownies', 'protein bar', 'protein snack', 'granola bar',
+    'ice cream', 'cake', 'pastry', 'treat'
+  ]
+  
+  // Condiments detection
+  const condimentKeywords = [
+    'ketchup', 'mustard', 'mayonnaise', 'mayo', 'hot sauce', 'soy sauce',
+    'vinegar', 'honey', 'relish',
+    'condiment', 'sauce', 'salsa', 'marinara', 'pesto', 'aioli', 'dressing',
+    'syrup', 'spread', 'jam', 'jelly', 'preserve', 'chutney', 'tahini'
+  ]
+  
+  // Pantry Staples detection - comprehensive keywords for canned/packaged/dry goods
+  // NOTE: Exclude items that should be in other categories (tortillas, bread, etc.)
+  const pantryStaplesKeywords = [
+    'canned', 'can', 'jar', 'jarred', 'bottle', 'bottled', 'packaged', 'package',
+    'soup', 'broth', 'stock',
+    'crackers', 'nuts', 'seeds', 'dried', 'dehydrated',
+    'spices', 'herbs', 'seasoning', 'mix', 'mixes',
+    'salt', 'pepper', 'sugar',
+    'peanut butter', 'jam', 'jelly', 'preserves', 'marmalade',
+    'olive oil', 'vegetable oil', 'canola oil', 'cooking oil',
+    'coconut milk', 'evaporated milk', 'condensed milk',
+    'tuna', 'salmon', 'sardines', 'anchovies', 'canned fish',
+    'pickles', 'olives', 'capers', 'artichokes',
+    'bouillon', 'stock cubes', 'broth cubes',
+    'baking powder', 'baking soda', 'yeast', 'vanilla extract',
+    'chocolate chips', 'cocoa powder', 'cacao',
+    'breadcrumbs', 'panko', 'croutons',
+    'instant', 'quick-cook', 'ready-to-eat'
+  ]
+
+  const nonFoodKeywords = [
+    'parchment', 'foil', 'wrap', 'paper', 'storage bag', 'baking sheet',
+    'trash bag', 'zipper bag', 'cleaner', 'detergent', 'soap', 'sponge',
+    'napkin', 'towel', 'foil', 'filter', 'candle', 'bag', 'disposable',
+    'container', 'baguette bag', 'foil sheet'
+  ]
+  
+  // Check for matches - prioritize specific categories first
+  // IMPORTANT: Order matters! Check frozen and grains BEFORE produce to avoid false matches
+  
+  // Frozen foods - check FIRST (highest priority)
+  // This catches "pizza with peppers" as frozen, not produce
+  if (frozenKeywords.some(keyword => lower.includes(keyword))) {
+    return 'Frozen'
+  }
+  
+  // Grains, Bread & Pasta - check SECOND (before produce to catch tortillas correctly)
+  // This ensures tortillas always go to Grains, not Pantry Staples
+  if (grainKeywords.some(keyword => lower.includes(keyword))) {
+    return 'Grains, Bread & Pasta'
+  }
+  
+  // Meat, poultry, seafood - check THIRD
+  // Check for exact matches first, then partial matches
+  for (const keyword of meatKeywords) {
+    if (lower === keyword || lower.startsWith(keyword + ' ') || lower.endsWith(' ' + keyword) || lower.includes(' ' + keyword + ' ')) {
+      return 'Meat, Poultry & Seafood'
+    }
+  }
+  // Also check if item name contains any meat keyword
+  if (meatKeywords.some(keyword => lower.includes(keyword))) {
+    return 'Meat, Poultry & Seafood'
+  }
+  
+  // Produce - check FOURTH (after frozen/grains to avoid false matches)
+  // Only match if the item IS produce, not just contains produce as an ingredient
+  // Use stricter matching to avoid "pizza with peppers" being classified as produce
+  for (const keyword of produceKeywords) {
+    // Exact match or starts with keyword (e.g., "peppers" or "peppers organic")
+    if (lower === keyword || lower.startsWith(keyword + ' ')) {
+      return 'Produce'
+    }
+    // Ends with keyword (e.g., "organic peppers")
+    if (lower.endsWith(' ' + keyword)) {
+      return 'Produce'
+    }
+    // Contains keyword but check if it's a standalone word, not part of a compound item
+    // Skip if it's part of a larger item name (like "pizza with peppers")
+    if (lower.includes(' ' + keyword + ' ')) {
+      // Only match if keyword appears early in the name (likely the main item)
+      const keywordIndex = lower.indexOf(' ' + keyword + ' ')
+      if (keywordIndex < 20) { // Within first 20 chars, likely the main item
+        return 'Produce'
+      }
+    }
+  }
+  // Only do loose matching for very specific produce items that are unlikely to be ingredients
+  const strictProduceKeywords = ['organic', 'fresh', 'fruit', 'vegetable', 'veggie', 'produce', 'arugula', 'spring mix']
+  if (strictProduceKeywords.some(keyword => lower.includes(keyword) && (lower.startsWith(keyword) || lower.indexOf(keyword) < 15))) {
+    return 'Produce'
+  }
+  
+  // Dairy - check FIFTH
+  for (const keyword of dairyKeywords) {
+    if (lower === keyword || lower.startsWith(keyword + ' ') || lower.endsWith(' ' + keyword) || lower.includes(' ' + keyword + ' ')) {
+      return 'Dairy & Eggs'
+    }
+  }
+  if (dairyKeywords.some(keyword => lower.includes(keyword))) {
+    return 'Dairy & Eggs'
+  }
+  
+  // Plant-based - check SIXTH
+  for (const keyword of plantBasedKeywords) {
+    if (lower === keyword || lower.startsWith(keyword + ' ') || lower.endsWith(' ' + keyword) || lower.includes(' ' + keyword + ' ')) {
+      return 'Plant-Based Proteins & Legumes'
+    }
+  }
+  if (plantBasedKeywords.some(keyword => lower.includes(keyword))) {
+    return 'Plant-Based Proteins & Legumes'
+  }
+  
+  // Beverages - check SEVENTH
+  if (beverageKeywords.some(keyword => lower.includes(keyword))) {
+    return 'Beverages'
+  }
+  
+  // Snacks - check EIGHTH
+  if (snackKeywords.some(keyword => lower.includes(keyword))) {
+    return 'Snacks, Sweets & Desserts'
+  }
+  
+  // Condiments - check NINTH
+  if (condimentKeywords.some(keyword => lower.includes(keyword))) {
+    return 'Condiments, Sauces & Spreads'
+  }
+  
+  // Pantry staples - check LAST (lowest priority, after grains to avoid conflicts)
+  // Make sure it's not already categorized as something else
+  if (pantryStaplesKeywords.some(keyword => lower.includes(keyword))) {
+    // Double-check it's not a grain item (tortillas, bread, etc.)
+    if (!grainKeywords.some(keyword => lower.includes(keyword))) {
+      return 'Pantry Staples & Essentials'
+    }
+  }
+  
+  if (nonFoodKeywords.some(keyword => lower.includes(keyword))) {
+    return 'Non-Food / Misc'
+  }
+  
+  return 'Pantry Staples & Essentials'
+}
+
+/**
+ * Smart location detection based on item name and category
+ * Uses normalized category names to ensure accurate location assignment
+ */
+function detectLocationFromName(itemName: string, category: string): 'fridge' | 'freezer' | 'pantry' {
+  const lower = itemName
+    .toString()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+  
+  // Normalize category to match standard category names
+  const normalizedCategory = normalizeCategory(category)
+  
+  // Frozen items - check first
+  if (lower.includes('frozen') || lower.includes('ice cream')) {
+    return 'freezer'
+  }
+  
+  // Fridge items - based on normalized categories
+  // ALL Produce items go in fridge (fruits, vegetables, berries, etc.)
+  if (normalizedCategory === 'Produce') {
+    return 'fridge'
+  }
+  
+  // ALL Dairy & Eggs go in fridge
+  if (normalizedCategory === 'Dairy & Eggs') {
+    return 'fridge'
+  }
+  
+  // ALL Meat, Poultry & Seafood go in fridge (unless frozen)
+  if (normalizedCategory === 'Meat, Poultry & Seafood') {
+    return 'fridge'
+  }
+  
+  // Plant-based proteins (tofu, tempeh, etc.) go in fridge
+  if (normalizedCategory === 'Plant-Based Proteins & Legumes') {
+    // Check if it's a shelf-stable legume (canned beans, dried lentils)
+    if (lower.includes('canned') || lower.includes('dried') || lower.includes('dry')) {
+      return 'pantry'
+    }
+    return 'fridge'
+  }
+  
+  // Fresh items with keywords
+  if (lower.includes('fresh') || lower.includes('refrigerated')) {
+    return 'fridge'
+  }
+  
+  // Specific item keywords that need fridge
+  const fridgeKeywords = [
+    'milk', 'cheese', 'butter', 'egg', 'eggs', 'yogurt', 'cream', 'sour cream',
+    'chicken', 'beef', 'steak', 'steaks', 'pork', 'fish', 'salmon', 'tuna', 'shrimp',
+    'turkey', 'duck', 'lamb', 'veal', 'bacon', 'ham', 'ground beef', 'ground pork',
+    'strawberry', 'strawberries', 'blueberry', 'blueberries', 'raspberry', 'raspberries',
+    'blackberry', 'blackberries', 'cherry', 'cherries', 'grape', 'grapes',
+    'apple', 'apples', 'banana', 'bananas', 'orange', 'oranges', 'lemon', 'lemons',
+    'tomato', 'tomatoes', 'lettuce', 'spinach', 'carrot', 'carrots', 'broccoli',
+    'cucumber', 'cucumbers', 'pepper', 'peppers', 'celery', 'mushroom', 'mushrooms',
+    'avocado', 'avocados', 'peach', 'peaches', 'pear', 'pears', 'plum', 'plums',
+    'kiwi', 'mango', 'mangoes', 'pineapple', 'watermelon', 'cantaloupe', 'honeydew'
+  ]
+  
+  if (fridgeKeywords.some(keyword => lower.includes(keyword))) {
+    return 'fridge'
+  }
+  
+  // Default to pantry for shelf-stable items
+  return 'pantry'
+}
+
+/**
+ * Unified formatter for all pantry items
+ * Ensures consistent formatting regardless of import method (barcode, receipt, image scan)
+ */
+export function formatPantryItem(input: {
+  name: string
+  category?: string
+  quantity?: number
+  unit?: string
+  location?: 'fridge' | 'freezer' | 'pantry'
+  barcode?: string
+  notes?: string
+  expiry_date?: string
+  price?: number
+  emoji?: string
+  image?: string
+}): FormattedPantryItem {
+  // Smart category detection - use provided category or detect from name
+  const detectedCategory = input.category ? normalizeCategory(input.category) : detectCategoryFromName(input.name)
+  
+  // Get appropriate emoji (prefer provided emoji, then lookup by name)
+  const icon = input.emoji || getItemEmoji(input.name, detectedCategory)
+  
+  // Smart location detection - use provided location or detect from name and category
+  // Use determineStorageLocation which properly handles normalized categories
+  const location = input.location || determineStorageLocation(input.name, detectedCategory)
+  
+  return {
+    name: input.name,
+    icon,
+    category: detectedCategory,
+    quantity: input.quantity || 1,
+    unit: input.unit || 'unit',
+    location,
+    barcode: input.barcode,
+    notes: input.notes,
+    expiry_date: input.expiry_date,
+    price: input.price,
+    image_url: input.image,
+  }
+}
+
+/**
+ * Batch format multiple items (useful for receipt scanning)
+ */
+export function formatPantryItems(items: Array<{
+  name: string
+  category?: string
+  quantity?: number
+  unit?: string
+  location?: 'fridge' | 'freezer' | 'pantry'
+  barcode?: string
+  notes?: string
+  expiry_date?: string
+  price?: number
+  emoji?: string
+  image?: string
+}>): FormattedPantryItem[] {
+  return items.map(item => formatPantryItem(item))
+}
+
