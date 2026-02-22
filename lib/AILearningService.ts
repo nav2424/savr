@@ -311,8 +311,7 @@ class AILearningService {
   }
 
   private async saveBehaviorData(userId: string, behaviorData: UserBehaviorData): Promise<void> {
-    try {
-      // Use upsert with proper conflict handling to avoid unique constraint violations
+    const doSave = async (): Promise<{ error: any }> => {
       const { error } = await supabase
         .from('user_behavior_data')
         .upsert({
@@ -320,33 +319,42 @@ class AILearningService {
           data: behaviorData,
           updated_at: new Date().toISOString()
         }, {
-          onConflict: 'user_id' // Handle conflicts on user_id field
+          onConflict: 'user_id'
         })
+      return { error }
+    }
+
+    try {
+      let { error } = await doSave()
 
       if (error) {
-        console.error('Error saving behavior data:', error)
-        // If it's a unique constraint error, try to update instead
-        if (error.code === '23505') {
-          console.log('🔄 Retrying with update operation...')
-          const { error: updateError } = await supabase
-            .from('user_behavior_data')
-            .update({
-              data: behaviorData,
-              updated_at: new Date().toISOString()
-            })
-            .eq('user_id', userId)
-          
-          if (updateError) {
-            console.error('Error updating behavior data:', updateError)
-          } else {
-            console.log('✅ Behavior data updated successfully')
+        // RLS violation (42501): session may not be ready yet (e.g. right after signup). Retry once.
+        if (error.code === '42501') {
+          await new Promise(r => setTimeout(r, 800))
+          const retry = await doSave()
+          error = retry.error
+        }
+
+        if (error) {
+          // Unique constraint: try update instead
+          if (error.code === '23505') {
+            const { error: updateError } = await supabase
+              .from('user_behavior_data')
+              .update({
+                data: behaviorData,
+                updated_at: new Date().toISOString()
+              })
+              .eq('user_id', userId)
+            if (!updateError) return
+            error = updateError
+          }
+          if (__DEV__) {
+            console.warn('Behavior data save failed (non-blocking):', error.message)
           }
         }
-      } else {
-        console.log('✅ Behavior data saved successfully')
       }
-    } catch (error) {
-      console.error('Error saving behavior data:', error)
+    } catch (e) {
+      if (__DEV__) console.warn('Behavior data save error:', e)
     }
   }
 

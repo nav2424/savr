@@ -14,6 +14,7 @@ import { StatusBar as ExpoStatusBar } from 'expo-status-bar'
 import { useRouter } from 'expo-router'
 import { useSimpleTheme } from '../../lib/SimpleThemeContext'
 import { useAuth } from '../../lib/AuthContext'
+import { config } from '../../config'
 import * as Haptics from 'expo-haptics'
 import SageAssistantV2 from '../../components/SageAssistantV2'
 import { 
@@ -27,29 +28,39 @@ const { width } = Dimensions.get('window')
 const responsiveDims = getResponsiveDimensions()
 
 // Settings menu items
-const SETTINGS_ITEMS = [
-  {
-    id: 'profile',
-    title: 'Profile & Settings',
-    description: 'Manage your account & preferences',
-    icon: '👤',
-    route: '/profile-settings',
-  },
-  {
-    id: 'notifications',
-    title: 'Notifications',
-    description: 'Manage notification preferences',
-    icon: '🔔',
-    route: '/notifications-settings',
-  },
-  {
-    id: 'receipts',
-    title: 'Receipt History',
-    description: 'View scanned receipts',
-    icon: '🧾',
-    route: '/receipts-history',
-  },
-]
+const getSettingsItems = () => {
+  const items = [
+    {
+      id: 'subscription',
+      title: 'Subscription',
+      description: 'SAVR Monthly, SAVR Annual – manage or upgrade',
+      icon: '⭐',
+      route: '/subscription-management',
+    },
+    {
+      id: 'profile',
+      title: 'Profile & Settings',
+      description: 'Manage your account & preferences',
+      icon: '👤',
+      route: '/profile-settings',
+    },
+    {
+      id: 'notifications',
+      title: 'Notifications',
+      description: 'Manage notification preferences',
+      icon: '🔔',
+      route: '/notifications-settings',
+    },
+    {
+      id: 'receipts',
+      title: 'Receipt History',
+      description: 'View scanned receipts',
+      icon: '🧾',
+      route: '/receipts-history',
+    },
+  ]
+  return items
+}
 
 export default function MoreScreen() {
   const { colors } = useSimpleTheme()
@@ -67,7 +78,7 @@ export default function MoreScreen() {
     // Handler for SAGE voice commands in More tab
   }
 
-  const handleItemPress = (item: typeof SETTINGS_ITEMS[0]) => {
+  const handleItemPress = (item: ReturnType<typeof getSettingsItems>[number]) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     
     if (item.route) {
@@ -163,12 +174,12 @@ export default function MoreScreen() {
               end={{ x: 1, y: 1 }}
               style={styles.settingsCardGradient}
             >
-              {SETTINGS_ITEMS.map((item, index) => (
+              {getSettingsItems().map((item, index) => (
                 <Pressable
                   key={item.id}
                   style={[
                     styles.settingsItem,
-                    index === SETTINGS_ITEMS.length - 1 && styles.settingsItemLast
+                    index === getSettingsItems().length - 1 && styles.settingsItemLast
                   ]}
                   onPress={() => handleItemPress(item)}
                 >
@@ -468,6 +479,6 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   bottomSpacing: {
-    height: 20,
+    height: 100,
   },
 })

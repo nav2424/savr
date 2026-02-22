@@ -7,11 +7,11 @@ import {
   StyleSheet,
   ScrollView,
   Pressable,
+  Dimensions,
   TextInput,
   Alert,
   ActivityIndicator,
   RefreshControl,
-  Dimensions,
 } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar'
@@ -26,18 +26,13 @@ import AllergenDetailModal from '../../components/AllergenDetailModal'
 import { AllergenCheckResult } from '../../lib/BarcodeService'
 import { LiquidGlassCard } from '../../components/LiquidGlassCard'
 import { logger } from '../../lib/Logger'
-import { 
-  scaleSize, 
-  scaleFont, 
-  scaleWidth, 
-  scaleHeight, 
-  responsivePadding, 
-  responsiveFonts, 
+import {
+  responsivePadding,
+  responsiveFonts,
   responsiveSpacing,
-  getResponsiveDimensions 
+  getResponsiveDimensions,
 } from '../../lib/responsive'
 
-const { width } = Dimensions.get('window')
 const responsiveDims = getResponsiveDimensions()
 
 const COMMON_ALLERGENS = [
@@ -50,7 +45,6 @@ const COMMON_ALLERGENS = [
   'Soy',
   'Wheat',
   'Sesame',
-  'Gluten',
 ]
 
 interface ScanHistoryItem {
@@ -337,19 +331,23 @@ export default function AllergiesScreen() {
           />
         }
       >
-        {/* Premium Diagnostic Header */}
+        {/* Header: SAVR + Allergy Protection only */}
         <View style={styles.header}>
           <View>
             <Text style={styles.savrTitle}>SAVR</Text>
             <Text style={styles.headerSubtitle}>Allergy Protection</Text>
           </View>
-          {stats.allergiesConfigured > 0 && (
-            <View style={styles.protectionStatus}>
-              <Ionicons name="checkmark-circle" size={16} color="#6A9571" />
-              <Text style={styles.protectionText}>Active protection monitoring {stats.allergiesConfigured} allergen{stats.allergiesConfigured > 1 ? 's' : ''}</Text>
-            </View>
-          )}
         </View>
+
+        {/* Active protection banner – full width below header */}
+        {stats.allergiesConfigured > 0 && (
+          <View style={styles.protectionBanner}>
+            <Ionicons name="checkmark-circle" size={16} color="#6A9571" />
+            <Text style={styles.protectionBannerText}>
+              Active protection monitoring {stats.allergiesConfigured} allergen{stats.allergiesConfigured > 1 ? 's' : ''}
+            </Text>
+          </View>
+        )}
 
         {/* Elegant Stats */}
         <View style={styles.statsRow}>
@@ -529,7 +527,17 @@ export default function AllergiesScreen() {
                   <Pressable
                     key={item.id}
                     style={styles.historyItem}
-                    onPress={() => router.push('/scan')}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+                      router.push({
+                        pathname: '/scan-detail',
+                        params: {
+                          barcode: item.barcode,
+                          product_name: item.product_name,
+                          scanned_at: item.scanned_at,
+                        },
+                      })
+                    }}
                   >
                     <View style={styles.historyContent}>
                       <Text style={styles.historyName} numberOfLines={1}>
@@ -600,23 +608,26 @@ const styles = StyleSheet.create({
   bottomSpacing: {
     height: 100,
   },
+  // Match Home tab header exactly: position and size of SAVR logo
   header: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'flex-start',
     paddingHorizontal: 20,
     paddingTop: 60,
     paddingBottom: 20,
   },
   savrTitle: {
-    fontSize: responsiveDims.isSmallScreen ? responsiveFonts.title : responsiveFonts.largeTitle,
+    fontSize: responsiveFonts.largeTitle,
     fontWeight: '700',
     color: '#000000',
     letterSpacing: -0.5,
-    marginBottom: responsiveSpacing.xs,
+    marginBottom: responsiveSpacing.sm,
   },
   headerSubtitle: {
-    fontSize: 14,
-    fontWeight: '500',
+    fontSize: responsiveFonts.lg,
     color: '#8E8E93',
-    letterSpacing: -0.2,
+    marginTop: responsiveSpacing.sm,
   },
   headerTop: {
     flexDirection: 'row',
@@ -647,6 +658,23 @@ const styles = StyleSheet.create({
     color: '#8E8E93',
     fontWeight: '500',
   },
+  protectionBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(106, 149, 113, 0.15)',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 12,
+    gap: 8,
+    marginHorizontal: 20,
+    marginBottom: 20,
+  },
+  protectionBannerText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4A7558',
+    flex: 1,
+  },
   protectionStatus: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -672,12 +700,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     marginBottom: 16,
     gap: 12,
+    alignItems: 'stretch',
   },
   statCard: {
     flex: 1,
+    minWidth: 0,
   },
   statContent: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   statNumber: {
     fontSize: 24,

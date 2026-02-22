@@ -19,7 +19,9 @@ import { LinearGradient } from 'expo-linear-gradient'
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar'
 import { useRouter } from 'expo-router'
 import { useAuth } from '../lib/AuthContext'
+import { useListsUnified } from '../lib/useListsUnified'
 import { userPreferencesService } from '../lib/UserPreferencesService'
+import { propagateUserName } from '../lib/UserProfileService'
 import { BlurView } from 'expo-blur'
 import * as Haptics from 'expo-haptics'
 import { Ionicons } from '@expo/vector-icons'
@@ -43,8 +45,10 @@ const COOKING_SKILL_OPTIONS = ['Beginner', 'Intermediate', 'Advanced', 'Chef-Lev
 
 export default function ProfileSettingsScreen() {
   const router = useRouter()
-  const { user } = useAuth()
+  const { user, deleteAccount } = useAuth()
+  const { refreshLists } = useListsUnified()
   const [loading, setLoading] = useState(false)
+  const [deletingAccount, setDeletingAccount] = useState(false)
   const [hasChanges, setHasChanges] = useState(false)
   const [currentPreferences, setCurrentPreferences] = useState<any>(null)
   const [errors, setErrors] = useState<{[key: string]: string}>({})
@@ -125,6 +129,18 @@ export default function ProfileSettingsScreen() {
         await userPreferencesService.savePreferences(updatedPreferences as any, user.id)
         setCurrentPreferences(updatedPreferences)
         setHasChanges(false)
+
+        // Propagate name to users table and all denormalized copies (lists, activities, etc.)
+        const fullName = [formData.firstName.trim(), formData.lastName.trim()].filter(Boolean).join(' ')
+        if (fullName) {
+          const { error: nameError } = await propagateUserName(user.id, fullName)
+          if (nameError) {
+            logger.warn('Name propagation failed (profile saved)', { error: nameError })
+            // Profile preferences saved; name may not have propagated everywhere
+          } else if (typeof refreshLists === 'function') {
+            refreshLists().catch(() => {}) // Refresh lists so updated names show immediately
+          }
+        }
         
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
         Alert.alert(
@@ -732,6 +748,56 @@ export default function ProfileSettingsScreen() {
           )}
         </View>
 
+        {/* Delete Account Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Account</Text>
+          <Text style={styles.dangerZoneDescription}>
+            Permanently delete your account and all associated data. This action cannot be undone.
+          </Text>
+          <Pressable
+            style={[styles.deleteAccountButton, deletingAccount && styles.deleteAccountButtonDisabled]}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+              Alert.alert(
+                'Delete Account',
+                'Are you sure you want to permanently delete your account? All your data including pantry items, lists, receipts, and preferences will be permanently removed. This action cannot be undone.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Delete Account',
+                    style: 'destructive',
+                    onPress: async () => {
+                      setDeletingAccount(true)
+                      const { error } = await deleteAccount()
+                      setDeletingAccount(false)
+                      if (error) {
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+                        Alert.alert(
+                          'Deletion Failed',
+                          error.message || 'Failed to delete account. Please try again or contact support.'
+                        )
+                        return
+                      }
+                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+                      router.replace('/welcome')
+                    },
+                  },
+                ]
+              )
+            }}
+            disabled={deletingAccount}
+          >
+            {deletingAccount ? (
+              <ActivityIndicator color="#FFFFFF" size="small" />
+            ) : (
+              <View style={styles.deleteAccountButtonContent}>
+                <Ionicons name="trash-outline" size={20} color="#FFFFFF" />
+                <Text style={styles.deleteAccountButtonText}>Delete Account</Text>
+              </View>
+            )}
+          </Pressable>
+        </View>
+
         {/* Save Button */}
         {hasChanges && (
           <Pressable
@@ -980,6 +1046,36 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '700',
+  },
+  dangerZoneDescription: {
+    fontSize: 14,
+    color: '#6B7280',
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  deleteAccountButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#DC2626',
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(220, 38, 38, 0.5)',
+  },
+  deleteAccountButtonDisabled: {
+    opacity: 0.6,
+  },
+  deleteAccountButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  deleteAccountButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    marginLeft: 8,
   },
   inputBlur: {
     borderRadius: 20,

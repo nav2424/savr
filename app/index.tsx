@@ -1,16 +1,39 @@
 // SAVR App Entry Point - Check Auth State
 import React, { useEffect } from 'react'
 import { View, ActivityIndicator, StyleSheet } from 'react-native'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { LinearGradient } from 'expo-linear-gradient'
 import { useRouter } from 'expo-router'
+import * as Linking from 'expo-linking'
 import { useSimpleTheme } from '../lib/SimpleThemeContext'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
+
+const ONBOARDING_COMPLETED_KEY = 'onboarding_completed_v1'
 
 export default function IndexScreen() {
   const router = useRouter()
   const { colors } = useSimpleTheme()
   const { user, session, loading } = useAuth()
+
+  // Check for password reset deep link FIRST (before auth flow)
+  useEffect(() => {
+    const checkPasswordResetLink = async () => {
+      try {
+        const initialUrl = await Linking.getInitialURL()
+        if (initialUrl && (initialUrl.includes('password-reset') || initialUrl.includes('password-reset'))) {
+          console.log('🔐 Password reset link detected in index, routing immediately')
+          router.replace('/password-reset')
+          return true
+        }
+      } catch (error) {
+        console.error('Error checking password reset link:', error)
+      }
+      return false
+    }
+
+    checkPasswordResetLink()
+  }, [router])
 
   useEffect(() => {
     // Wait for auth check to complete
@@ -38,8 +61,16 @@ export default function IndexScreen() {
             // Email is verified, go to app
             router.replace('/(tabs)')
           } else {
-            // Email not verified, show verification screen
-            router.replace('/email-verification')
+            // Email not verified: do onboarding first, then email verification at the end
+            const userId = currentUser?.id || session?.user?.id
+            const completed = userId ? await AsyncStorage.getItem(`${ONBOARDING_COMPLETED_KEY}_${userId}`) : null
+            if (completed === 'true') {
+              router.replace('/email-verification')
+            } else {
+              const email = currentUser?.email || session?.user?.email
+              const q = email ? `?email=${encodeURIComponent(email)}` : ''
+              router.replace(`/onboarding${q}`)
+            }
           }
         } catch (error: any) {
           // Handle refresh token errors
@@ -54,7 +85,15 @@ export default function IndexScreen() {
           if (session?.user?.email_confirmed_at) {
             router.replace('/(tabs)')
           } else {
-            router.replace('/email-verification')
+            const userId = session?.user?.id
+            const completed = userId ? await AsyncStorage.getItem(`${ONBOARDING_COMPLETED_KEY}_${userId}`) : null
+            if (completed === 'true') {
+              router.replace('/email-verification')
+            } else {
+              const email = session?.user?.email
+              const q = email ? `?email=${encodeURIComponent(email)}` : ''
+              router.replace(`/onboarding${q}`)
+            }
           }
         }
       } else {

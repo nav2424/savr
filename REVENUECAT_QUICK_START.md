@@ -31,11 +31,13 @@ EXPO_PUBLIC_REVENUECAT_WEB_API_KEY=rcb_YOUR_KEY_HERE
 
 In your RevenueCat dashboard, make sure you have:
 
-1. **Entitlement**: `premium`
+1. **Entitlement**: `Pro` (used for access checks in the app)
 2. **Products**:
-   - `savr_premium_monthly` ($4.99/month)
-   - `savr_premium_yearly` ($39.99/year)
-3. **Offering**: Set as "Current Offering" with both products
+   - `subscription_monthly_1` (Monthly)
+   - `annual_subscription_1` (Annual)
+3. **Offering**: Default offering with packages (e.g. `$rc_monthly`, `$rc_annual`) set as Current
+
+See **docs/REVENUECAT_INTEGRATION.md** for full dashboard setup and Paywall/Customer Center.
 
 ---
 

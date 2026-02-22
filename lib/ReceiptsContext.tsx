@@ -115,8 +115,21 @@ export function ReceiptsProvider({ children }: { children: ReactNode }) {
             }
             const updated = [newRecord as Receipt, ...prev]
             const totalAmount = newRecord.total_amount || 0
-            console.log(`✅ New receipt added: $${totalAmount.toFixed(2)} - Budget will auto-update!`)
-            console.log(`📊 Receipts count: ${prev.length} → ${updated.length}`)
+            
+            // Calculate new monthly total
+            const startOfMonth = new Date()
+            startOfMonth.setDate(1)
+            startOfMonth.setHours(0, 0, 0, 0)
+            const monthlyReceipts = updated.filter(r => {
+              const dateStr = r.purchase_date || r.created_at
+              return dateStr && new Date(dateStr) >= startOfMonth
+            })
+            const newMonthlyTotal = monthlyReceipts.reduce((sum, r) => sum + (r.total_amount || 0), 0)
+            
+            console.log(`✅ NEW RECEIPT ADDED TO BUDGET:`)
+            console.log(`   💵 Receipt total: $${totalAmount.toFixed(2)}`)
+            console.log(`   📊 New monthly total: $${newMonthlyTotal.toFixed(2)}`)
+            console.log(`   🧾 Receipts this month: ${monthlyReceipts.length}`)
             return updated
           })
         }
@@ -190,23 +203,21 @@ export function ReceiptsProvider({ children }: { children: ReactNode }) {
     const currentMonthReceipts = getMonthlyReceipts()
     const total = currentMonthReceipts.reduce((sum, receipt) => {
       const amount = receipt.total_amount || 0
-      console.log(`💰 Receipt ${receipt.id}: $${amount.toFixed(2)} (date: ${receipt.purchase_date || receipt.created_at})`)
-      return sum + amount
+      // Ensure amount is a valid number
+      const validAmount = typeof amount === 'number' && isFinite(amount) && amount >= 0 ? amount : 0
+      console.log(`💰 Receipt ${receipt.id}: $${validAmount.toFixed(2)} (date: ${receipt.purchase_date || receipt.created_at})`)
+      return sum + validAmount
     }, 0)
     
-    console.log(`📊 Monthly total: $${total.toFixed(2)} from ${currentMonthReceipts.length} receipts`)
-    return total
+    // Ensure total is valid
+    const validTotal = typeof total === 'number' && isFinite(total) && total >= 0 ? total : 0
+    console.log(`📊 Monthly total: $${validTotal.toFixed(2)} from ${currentMonthReceipts.length} receipts`)
+    return validTotal
   }
 
   const getWeeklySpending = (): { week: string; amount: number }[] => {
-    const startOfMonth = new Date()
-    startOfMonth.setDate(1)
-    startOfMonth.setHours(0, 0, 0, 0)
-
-    const currentMonthReceipts = receipts.filter(receipt => {
-      const receiptDate = new Date(receipt.purchase_date || receipt.created_at)
-      return receiptDate >= startOfMonth
-    })
+    // Use the same month window as getMonthlyReceipts so all budget views stay in sync
+    const currentMonthReceipts = getMonthlyReceipts()
 
     const weeks = [
       { week: 'Week 1', amount: 0, startDay: 1, endDay: 7 },
@@ -221,7 +232,9 @@ export function ReceiptsProvider({ children }: { children: ReactNode }) {
       
       const weekIndex = weeks.findIndex(w => day >= w.startDay && day <= w.endDay)
       if (weekIndex !== -1) {
-        weeks[weekIndex].amount += receipt.total_amount || 0
+        const amount = receipt.total_amount || 0
+        const validAmount = typeof amount === 'number' && isFinite(amount) && amount >= 0 ? amount : 0
+        weeks[weekIndex].amount += validAmount
       }
     })
 
@@ -229,14 +242,9 @@ export function ReceiptsProvider({ children }: { children: ReactNode }) {
   }
 
   const getCategorySpending = (): { category: string; amount: number; color: string; icon: string }[] => {
-    const startOfMonth = new Date()
-    startOfMonth.setDate(1)
-    startOfMonth.setHours(0, 0, 0, 0)
-
-    const currentMonthReceipts = receipts.filter(receipt => {
-      const receiptDate = new Date(receipt.purchase_date || receipt.created_at)
-      return receiptDate >= startOfMonth
-    })
+    // Use the same month window as getMonthlyReceipts so category totals
+    // line up with the main monthly total.
+    const currentMonthReceipts = getMonthlyReceipts()
 
     const categorySums: { [key: string]: number } = {}
     
@@ -244,8 +252,16 @@ export function ReceiptsProvider({ children }: { children: ReactNode }) {
       if (receipt.scan_result?.items) {
         receipt.scan_result.items.forEach((item: any) => {
           const category = item.category || 'Other'
-          const price = typeof item.price === 'number' ? item.price : 0
-          categorySums[category] = (categorySums[category] || 0) + price
+          const price = typeof item.price === 'number' && isFinite(item.price) && item.price >= 0 ? item.price : 0
+          const quantity = typeof item.quantity === 'number' && isFinite(item.quantity) && item.quantity > 0 ? item.quantity : 1
+          const isWeightBased = item.unit && ['kg', 'lb', 'lbs', 'g', 'oz'].includes(item.unit.toLowerCase())
+          
+          // Match the same calculation logic as ReceiptsService.saveReceipt:
+          // - Weight-based items: price is already line total (don't multiply)
+          // - Count-based items: price is unit price (multiply by quantity)
+          const itemTotal = isWeightBased ? price : (price * quantity)
+          const validItemTotal = typeof itemTotal === 'number' && isFinite(itemTotal) && itemTotal >= 0 ? itemTotal : 0
+          categorySums[category] = (categorySums[category] || 0) + validItemTotal
         })
       }
     })
@@ -270,14 +286,31 @@ export function ReceiptsProvider({ children }: { children: ReactNode }) {
       'Other': '🛒',
     }
 
-    return Object.entries(categorySums)
+    const rawCategories = Object.entries(categorySums)
       .map(([category, amount]) => ({
         category,
         amount,
         color: categoryColors[category] || '#868E96',
         icon: categoryIcons[category] || '🛒',
       }))
-      .sort((a, b) => b.amount - a.amount)
+
+    // If item-level sums drift away from the authoritative monthly total
+    // (due to OCR quirks, missing items, tax, etc.), gently normalize so
+    // that the chart still adds up to the same total the user sees.
+    const monthlyTotal = getMonthlyTotal()
+    const totalCategoryAmount = rawCategories.reduce((sum, c) => sum + c.amount, 0)
+
+    if (monthlyTotal > 0 && totalCategoryAmount > monthlyTotal * 1.05) {
+      const scale = monthlyTotal / totalCategoryAmount
+      return rawCategories
+        .map(c => ({
+          ...c,
+          amount: c.amount * scale,
+        }))
+        .sort((a, b) => b.amount - a.amount)
+    }
+
+    return rawCategories.sort((a, b) => b.amount - a.amount)
   }
 
   return (

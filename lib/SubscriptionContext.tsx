@@ -1,190 +1,206 @@
 /**
  * Subscription Context - Manages RevenueCat subscriptions
- * 
- * ⚠️ TEMPORARILY DISABLED FOR TESTING
- * This context is currently disabled in the app flow.
- * To re-enable, uncomment SubscriptionProvider in app/_layout.tsx
- * 
- * Model: 3-day free trial, then $4.99/month or $39.99/year
- * No free tier - Premium only app
+ *
+ * To enable paywall: set EXPO_PUBLIC_ENABLE_PAYWALL=true (EAS secrets or .env).
+ * Entitlement: "pro". Uses RevenueCat hosted paywall only.
  */
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { Platform } from 'react-native';
-import Constants from 'expo-constants';
-import Purchases, {
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  ReactNode,
+} from 'react';
+import {
   PurchasesOffering,
   PurchasesPackage,
   CustomerInfo,
-  LOG_LEVEL,
 } from 'react-native-purchases';
-import { REVENUECAT_API_KEYS, SUBSCRIPTION_PRODUCTS } from '../config/revenuecat';
+import RevenueCatUI, {
+  PAYWALL_RESULT,
+  type PresentPaywallParams,
+  type PresentCustomerCenterParams,
+} from 'react-native-purchases-ui';
+import Purchases from 'react-native-purchases';
+import {
+  initializeRevenueCat,
+  getProStatusWithInfo,
+  showHostedPaywall as showHostedPaywallLib,
+  restoreAndSync as restoreAndSyncLib,
+  PRO_ENTITLEMENT,
+} from './revenuecat';
+
+export { PAYWALL_RESULT };
+
+function hasProEntitlement(info: CustomerInfo): boolean {
+  return typeof info.entitlements.active[PRO_ENTITLEMENT] !== 'undefined';
+}
+
+function getTrialDaysRemaining(info: CustomerInfo): number | null {
+  const pro = info.entitlements.active[PRO_ENTITLEMENT];
+  if (!pro?.expirationDate) return null;
+  const now = new Date();
+  const exp = new Date(pro.expirationDate);
+  const days = Math.ceil(
+    (exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
+  );
+  return days <= 3 && days > 0 ? days : null;
+}
 
 interface SubscriptionContextType {
   isSubscribed: boolean;
   isLoading: boolean;
   currentOffering: PurchasesOffering | null;
   customerInfo: CustomerInfo | null;
-  purchasePackage: (pkg: PurchasesPackage) => Promise<{ success: boolean; error?: string }>;
+  purchasePackage: (
+    pkg: PurchasesPackage
+  ) => Promise<{ success: boolean; error?: string }>;
   restorePurchases: () => Promise<{ success: boolean; error?: string }>;
   getSubscriptionStatus: () => Promise<void>;
   trialDaysRemaining: number | null;
+  presentPaywall: (params?: PresentPaywallParams) => Promise<PAYWALL_RESULT>;
+  presentPaywallIfNeeded: () => Promise<PAYWALL_RESULT>;
+  presentCustomerCenter: (
+    params?: PresentCustomerCenterParams
+  ) => Promise<void>;
 }
 
-const SubscriptionContext = createContext<SubscriptionContextType | undefined>(undefined);
+const SubscriptionContext =
+  createContext<SubscriptionContextType | undefined>(undefined);
 
-export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({
+  children,
+}) => {
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [currentOffering, setCurrentOffering] = useState<PurchasesOffering | null>(null);
+  const [currentOffering, setCurrentOffering] =
+    useState<PurchasesOffering | null>(null);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
-  const [trialDaysRemaining, setTrialDaysRemaining] = useState<number | null>(null);
+  const [trialDaysRemaining, setTrialDaysRemaining] = useState<number | null>(
+    null
+  );
 
-  useEffect(() => {
-    initializePurchases();
-  }, []);
-
-  const initializePurchases = async () => {
-    try {
-      // Detect if running in Expo Go
-      const isExpoGo = Constants.appOwnership === 'expo';
-      
-      if (isExpoGo) {
-        // In Expo Go, use Browser Mode with Web API key
-        console.log('Expo Go app detected. Using RevenueCat in Browser Mode.');
-        await Purchases.configure({ apiKey: REVENUECAT_API_KEYS.web });
-      } else {
-        // In production/development builds, use native API keys
-        if (Platform.OS === 'ios') {
-          await Purchases.configure({ apiKey: REVENUECAT_API_KEYS.ios });
-        } else {
-          await Purchases.configure({ apiKey: REVENUECAT_API_KEYS.android });
-        }
-      }
-
-      // Set debug mode in development
-      if (__DEV__) {
-        await Purchases.setLogLevel(LOG_LEVEL.DEBUG);
-      }
-
-      // Get current offerings
-      const offerings = await Purchases.getOfferings();
-      if (offerings.current) {
-        setCurrentOffering(offerings.current);
-      }
-
-      // Check subscription status
-      await getSubscriptionStatus();
-    } catch (error) {
-      console.error('Error initializing purchases:', error);
-      // In Expo Go or if configuration fails, set loading to false but don't crash
-      if (error && typeof error === 'object' && 'message' in error) {
-        const errorMessage = (error as Error).message;
-        if (errorMessage.includes('Invalid API key') || errorMessage.includes('credentials issue')) {
-          console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          console.log('⚠️  REVENUECAT WEB API KEY NEEDED');
-          console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          console.log('📱 You\'re running in Expo Go (Browser Mode)');
-          console.log('🔑 Get your Web API key from RevenueCat Dashboard:');
-          console.log('   → Project Settings → API Keys → Web/Browser');
-          console.log('\n📝 Then add it to your config:');
-          console.log('   Option 1: Create .env file with:');
-          console.log('   REVENUECAT_WEB_API_KEY=rcb_YOUR_KEY_HERE');
-          console.log('\n   Option 2: Update config/revenuecat.ts:');
-          console.log('   web: "rcb_YOUR_KEY_HERE"');
-          console.log('\n💡 App will work without it, but subscriptions disabled');
-          console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
-        }
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const getSubscriptionStatus = async () => {
-    try {
-      const info = await Purchases.getCustomerInfo();
+  const getSubscriptionStatus = useCallback(async () => {
+    const { hasPro, customerInfo: info } = await getProStatusWithInfo();
+    if (info) {
       setCustomerInfo(info);
-
-      // Check if user has active premium entitlement
-      const hasActiveSubscription = 
-        typeof info.entitlements.active['premium'] !== 'undefined';
-      
-      setIsSubscribed(hasActiveSubscription);
-
-      // Calculate trial days remaining
-      if (hasActiveSubscription) {
-        const premiumEntitlement = info.entitlements.active['premium'];
-        const expirationDate = premiumEntitlement?.expirationDate;
-        
-        if (expirationDate) {
-          const now = new Date();
-          const expiration = new Date(expirationDate);
-          const daysRemaining = Math.ceil((expiration.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-          
-          // If still in trial (less than 7 days from purchase)
-          if (daysRemaining <= 3 && daysRemaining > 0) {
-            setTrialDaysRemaining(daysRemaining);
-          } else {
-            setTrialDaysRemaining(null);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error getting subscription status:', error);
+      setIsSubscribed(hasPro);
+      setTrialDaysRemaining(getTrialDaysRemaining(info));
+    } else {
       setIsSubscribed(false);
     }
-  };
+  }, []);
 
-  const purchasePackage = async (pkg: PurchasesPackage): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const { customerInfo: info } = await Purchases.purchasePackage(pkg);
-      setCustomerInfo(info);
-
-      const hasActiveSubscription = 
-        typeof info.entitlements.active['premium'] !== 'undefined';
-      
-      setIsSubscribed(hasActiveSubscription);
-
-      return { success: true };
-    } catch (error: any) {
-      console.error('Error purchasing package:', error);
-      
-      // Check if user cancelled
-      if (error.userCancelled) {
-        return { success: false, error: 'Purchase cancelled' };
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      try {
+        await initializeRevenueCat();
+        if (cancelled) return;
+        const offerings = await Purchases.getOfferings();
+        if (offerings.current) {
+          setCurrentOffering(offerings.current);
+        }
+        await getSubscriptionStatus();
+      } catch (error) {
+        if (!cancelled && __DEV__) {
+          console.warn('[Subscription] Init error:', error);
+        }
+        setIsSubscribed(false);
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [getSubscriptionStatus]);
 
-      return { 
-        success: false, 
-        error: error.message || 'Failed to complete purchase' 
-      };
-    }
-  };
-
-  const restorePurchases = async (): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const info = await Purchases.restorePurchases();
+  useEffect(() => {
+    const listener = (info: CustomerInfo) => {
       setCustomerInfo(info);
+      setIsSubscribed(hasProEntitlement(info));
+      setTrialDaysRemaining(getTrialDaysRemaining(info));
+    };
+    const remove = Purchases.addCustomerInfoUpdateListener(listener);
+    return () => { if (typeof remove === 'function') remove(); };
+  }, []);
 
-      const hasActiveSubscription = 
-        typeof info.entitlements.active['premium'] !== 'undefined';
-      
-      setIsSubscribed(hasActiveSubscription);
-
-      if (hasActiveSubscription) {
+  const purchasePackage = useCallback(
+    async (
+      pkg: PurchasesPackage
+    ): Promise<{ success: boolean; error?: string }> => {
+      try {
+        const { customerInfo: info } = await Purchases.purchasePackage(pkg);
+        setCustomerInfo(info);
+        setIsSubscribed(hasProEntitlement(info));
         return { success: true };
-      } else {
-        return { success: false, error: 'No active subscription found' };
+      } catch (error: unknown) {
+        const err = error as { userCancelled?: boolean; message?: string };
+        if (err.userCancelled) {
+          return { success: false, error: 'Purchase cancelled' };
+        }
+        return {
+          success: false,
+          error: err.message || 'Failed to complete purchase',
+        };
       }
-    } catch (error: any) {
-      console.error('Error restoring purchases:', error);
-      return { 
-        success: false, 
-        error: error.message || 'Failed to restore purchases' 
-      };
+    },
+    []
+  );
+
+  const restorePurchases = useCallback(async (): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    const hasPro = await restoreAndSyncLib();
+    await getSubscriptionStatus();
+    return hasPro ? { success: true } : { success: false, error: 'No active subscription found' };
+  }, [getSubscriptionStatus]);
+
+  const presentPaywall = useCallback(
+    async (params?: PresentPaywallParams): Promise<PAYWALL_RESULT> => {
+      try {
+        const result = await showHostedPaywallLib();
+        if (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) {
+          await getSubscriptionStatus();
+        }
+        return result;
+      } catch {
+        return PAYWALL_RESULT.NOT_PRESENTED;
+      }
+    },
+    [getSubscriptionStatus]
+  );
+
+  const presentPaywallIfNeeded = useCallback(async (): Promise<PAYWALL_RESULT> => {
+    try {
+      const result = await RevenueCatUI.presentPaywallIfNeeded({
+        requiredEntitlementIdentifier: PRO_ENTITLEMENT,
+        offering: currentOffering ?? undefined,
+        displayCloseButton: true,
+      });
+      if (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) {
+        await getSubscriptionStatus();
+      }
+      return result;
+    } catch {
+      return PAYWALL_RESULT.NOT_PRESENTED;
     }
-  };
+  }, [currentOffering, getSubscriptionStatus]);
+
+  const presentCustomerCenter = useCallback(
+    async (params?: PresentCustomerCenterParams): Promise<void> => {
+      try {
+        await RevenueCatUI.presentCustomerCenter(params);
+        await getSubscriptionStatus();
+      } catch {
+        // Ignore (e.g. Expo Go)
+      }
+    },
+    [getSubscriptionStatus]
+  );
 
   return (
     <SubscriptionContext.Provider
@@ -197,6 +213,9 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({ childr
         restorePurchases,
         getSubscriptionStatus,
         trialDaysRemaining,
+        presentPaywall,
+        presentPaywallIfNeeded,
+        presentCustomerCenter,
       }}
     >
       {children}
@@ -212,3 +231,4 @@ export const useSubscription = () => {
   return context;
 };
 
+export { PRO_ENTITLEMENT };

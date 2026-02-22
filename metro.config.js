@@ -5,7 +5,6 @@ const config = getDefaultConfig(__dirname);
 
 // Exclude the sibling Next.js project directory
 config.resolver.blockList = [
-  /.*\/savr\/.*/,
   /.*\/\.next\/.*/,
   /.*\/src\/app\/layout\.tsx$/,
   /.*\/src\/app\/globals\.css$/,

@@ -42,11 +42,25 @@ class ReceiptsService {
         }
       }, 0)
       
-      // CRITICAL: If validation failed, use receiptTotal (extracted from receipt)
-      // Never save calculatedTotal when validation fails - it's incorrect
-      const totalAmount = scanResult.receiptTotal && scanResult.receiptTotal > 0
-        ? (scanResult.validationPassed ? calculatedTotal : scanResult.receiptTotal)
-        : calculatedTotal
+      // CRITICAL: Always use receiptTotal (includes tax) for budget tracking
+      // This is what the user actually paid at the store
+      // If receiptTotal exists and is valid, use it; otherwise use calculated total
+      const useReceiptTotal = !!scanResult.receiptTotal && scanResult.receiptTotal > 0
+      let totalAmount = useReceiptTotal ? scanResult.receiptTotal : calculatedTotal
+      
+      // Validation: Ensure totalAmount is a valid number
+      if (isNaN(totalAmount) || !isFinite(totalAmount) || totalAmount < 0) {
+        console.warn('⚠️ Invalid totalAmount calculated, using 0:', { totalAmount, calculatedTotal, receiptTotal: scanResult.receiptTotal })
+        totalAmount = 0
+      }
+      
+      if (useReceiptTotal) {
+        console.log(`💰 Using receipt total for budget: $${scanResult.receiptTotal?.toFixed(2)} (includes tax)`)
+      }
+      
+      // Use mismatch flags from scanResult (fixes undefined subtotalMismatch crash)
+      const subtotalMismatch = scanResult.subtotalMismatch ?? false
+      const totalMismatch = scanResult.totalMismatch ?? false
       
       // Log receipt details for debugging
       const itemsWithPrices = scanResult.items.filter(item => item.price && item.price > 0)
@@ -54,10 +68,18 @@ class ReceiptsService {
         itemCount: scanResult.items.length,
         itemsWithPrices: itemsWithPrices.length,
         receiptTotal: scanResult.receiptTotal,
+        receiptSubtotal: scanResult.receiptSubtotal,
+        receiptTax: scanResult.receiptTax,
         calculatedTotal: calculatedTotal.toFixed(2),
         finalTotal: totalAmount.toFixed(2),
-        validationPassed: scanResult.validationPassed,
-        difference: scanResult.receiptTotal ? Math.abs(scanResult.receiptTotal - calculatedTotal).toFixed(2) : 'N/A'
+        validationPassed: scanResult.validationPassed && !subtotalMismatch && !totalMismatch,
+        subtotalMismatch,
+        totalMismatch,
+        needsReview: scanResult.needsReview,
+        estimatedTax: scanResult.estimatedTax,
+        difference: scanResult.receiptTotal ? Math.abs(scanResult.receiptTotal - calculatedTotal).toFixed(2) : 'N/A',
+        selectedTotalsBlockIndex: scanResult.selectedTotalsBlockIndex,
+        allParsedTotalsBlocks: scanResult.allParsedTotalsBlocks
       })
       
       if (totalAmount === 0 && scanResult.items.length > 0) {
@@ -65,9 +87,16 @@ class ReceiptsService {
       }
       
       // Warn if validation failed
-      if (scanResult.receiptTotal && !scanResult.validationPassed) {
+      if (scanResult.receiptTotal && (!scanResult.validationPassed || subtotalMismatch || totalMismatch) && !scanResult.estimatedTax) {
         const difference = Math.abs(scanResult.receiptTotal - calculatedTotal)
-        console.warn(`⚠️ Receipt validation failed: Receipt total ($${scanResult.receiptTotal.toFixed(2)}) doesn't match calculated total ($${calculatedTotal.toFixed(2)}). Difference: $${difference.toFixed(2)}`)
+        console.warn(`⚠️ Receipt validation failed:`, {
+          receiptTotal: scanResult.receiptTotal.toFixed(2),
+          calculatedTotal: calculatedTotal.toFixed(2),
+          difference: difference.toFixed(2),
+          subtotalMismatch,
+          totalMismatch,
+          needsReview: scanResult.needsReview
+        })
       }
 
       // Optionally upload image to Supabase Storage

@@ -1,5 +1,5 @@
 // SAVR Budget Tracking - Real Financial Overview
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import {
   View,
   Text,
@@ -31,11 +31,15 @@ export default function BudgetTrackingScreen() {
   const { 
     receipts, 
     loading: receiptsLoading, 
-    getMonthlyTotal, 
-    getMonthlyReceipts,
-    getWeeklySpending, 
-    getCategorySpending 
   } = useReceipts()
+
+  // Month selection state (allows browsing previous months)
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const d = new Date()
+    d.setDate(1)
+    d.setHours(0, 0, 0, 0)
+    return d
+  })
 
   // Budget state
   const [monthlyBudget, setMonthlyBudget] = useState(0)
@@ -43,13 +47,157 @@ export default function BudgetTrackingScreen() {
   const [editModalVisible, setEditModalVisible] = useState(false)
   const [newBudgetValue, setNewBudgetValue] = useState('0')
 
-  // Calculate derived values from context (auto-updates!)
-  const spent = getMonthlyTotal()
-  const spendingByCategory = getCategorySpending()
-  const weeklySpending = getWeeklySpending()
+  // Receipts for the selected month (uses the same month window definition everywhere)
+  const monthlyReceiptsForSelectedMonth = useMemo(() => {
+    if (!receipts || receipts.length === 0) return []
+    const startOfMonth = new Date(selectedMonth)
+    startOfMonth.setDate(1)
+    startOfMonth.setHours(0, 0, 0, 0)
+
+    const endOfMonth = new Date(startOfMonth)
+    endOfMonth.setMonth(startOfMonth.getMonth() + 1)
+
+    return receipts.filter(receipt => {
+      const dateString = receipt.purchase_date || receipt.created_at
+      if (!dateString) return false
+      const receiptDate = new Date(dateString)
+      return receiptDate >= startOfMonth && receiptDate < endOfMonth
+    })
+  }, [receipts, selectedMonth])
+
+  // Calculate derived values for the selected month (auto-updates!)
+  const spent = useMemo(() => {
+    const total = monthlyReceiptsForSelectedMonth.reduce((sum, receipt) => {
+      const amount = receipt.total_amount || 0
+      const validAmount = typeof amount === 'number' && isFinite(amount) && amount >= 0 ? amount : 0
+      return sum + validAmount
+    }, 0)
+    // Ensure total is valid
+    return typeof total === 'number' && isFinite(total) && total >= 0 ? total : 0
+  }, [monthlyReceiptsForSelectedMonth])
+
+  const spendingByCategory = useMemo(() => {
+    const categorySums: { [key: string]: number } = {}
+
+    monthlyReceiptsForSelectedMonth.forEach(receipt => {
+      if (receipt.scan_result?.items) {
+        receipt.scan_result.items.forEach((item: any) => {
+          const category = item.category || 'Other'
+          const price = typeof item.price === 'number' && isFinite(item.price) && item.price >= 0 ? item.price : 0
+          const quantity = typeof item.quantity === 'number' && isFinite(item.quantity) && item.quantity > 0 ? item.quantity : 1
+          const isWeightBased = item.unit && ['kg', 'lb', 'lbs', 'g', 'oz'].includes(item.unit.toLowerCase())
+          
+          // Match the same calculation logic as ReceiptsService.saveReceipt:
+          // - Weight-based items: price is already line total (don't multiply)
+          // - Count-based items: price is unit price (multiply by quantity)
+          const itemTotal = isWeightBased ? price : (price * quantity)
+          const validItemTotal = typeof itemTotal === 'number' && isFinite(itemTotal) && itemTotal >= 0 ? itemTotal : 0
+          categorySums[category] = (categorySums[category] || 0) + validItemTotal
+        })
+      }
+    })
+
+    const categoryColors: { [key: string]: string } = {
+      'Produce': '#51CF66',
+      'Dairy': '#339AF0',
+      'Meat & Seafood': '#FF6B6B',
+      'Pantry Staples': '#8B7355',
+      'Snacks': '#FFA726',
+      'Beverages': '#4DABF7',
+      'Other': '#868E96',
+    }
+
+    const categoryIcons: { [key: string]: string } = {
+      'Produce': '🥬',
+      'Dairy': '🥛',
+      'Meat & Seafood': '🥩',
+      'Pantry Staples': '🥫',
+      'Pantry': '🥫',
+      'Snacks': '🍿',
+      'Beverages': '☕',
+      'Condiments': '🧂',
+      'Bakery': '🥖',
+      'Frozen': '❄️',
+      'Household': '🧻',
+      'Personal Care': '🧴',
+      'Deli': '🥪',
+      'Other': '🛒',
+    }
+
+    const rawCategories = Object.entries(categorySums)
+      .map(([category, amount]) => ({
+        category,
+        amount,
+        color: categoryColors[category] || '#868E96',
+        icon: categoryIcons[category] || '🛒',
+      }))
+
+    const totalCategoryAmount = rawCategories.reduce((sum, c) => sum + c.amount, 0)
+
+    // Normalize categories to never exceed the authoritative monthly total,
+    // while preserving proportions. This avoids “budget doesn’t add up” UI.
+    if (spent > 0 && totalCategoryAmount > spent * 1.05) {
+      const scale = spent / totalCategoryAmount
+      return rawCategories
+        .map(c => ({ ...c, amount: c.amount * scale }))
+        .sort((a, b) => b.amount - a.amount)
+    }
+
+    return rawCategories.sort((a, b) => b.amount - a.amount)
+  }, [monthlyReceiptsForSelectedMonth, spent])
+
+  const weeklySpending = useMemo(() => {
+    const weeks = [
+      { week: 'Week 1', amount: 0, startDay: 1, endDay: 7 },
+      { week: 'Week 2', amount: 0, startDay: 8, endDay: 14 },
+      { week: 'Week 3', amount: 0, startDay: 15, endDay: 21 },
+      { week: 'Week 4', amount: 0, startDay: 22, endDay: 31 },
+    ]
+
+    monthlyReceiptsForSelectedMonth.forEach(receipt => {
+      const date = new Date(receipt.purchase_date || receipt.created_at)
+      const day = date.getDate()
+      const weekIndex = weeks.findIndex(w => day >= w.startDay && day <= w.endDay)
+      if (weekIndex !== -1) {
+        const amount = receipt.total_amount || 0
+        const validAmount = typeof amount === 'number' && isFinite(amount) && amount >= 0 ? amount : 0
+        weeks[weekIndex].amount += validAmount
+      }
+    })
+
+    return weeks
+  }, [monthlyReceiptsForSelectedMonth])
+
   const percentSpent = monthlyBudget > 0 ? (spent / monthlyBudget) * 100 : 0
   const remaining = Math.max(0, monthlyBudget - spent)
   const onTrack = percentSpent <= 75
+
+  const selectedMonthLabel = useMemo(
+    () => selectedMonth.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+    [selectedMonth]
+  )
+
+  const goToPreviousMonth = () => {
+    setSelectedMonth(prev => {
+      const next = new Date(prev)
+      next.setMonth(prev.getMonth() - 1)
+      return next
+    })
+  }
+
+  const goToNextMonth = () => {
+    setSelectedMonth(prev => {
+      const now = new Date()
+      const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+      const next = new Date(prev)
+      next.setMonth(prev.getMonth() + 1)
+      // Prevent navigating into future months
+      if (next > currentMonthStart) {
+        return prev
+      }
+      return next
+    })
+  }
 
   // Load budget preference
   useEffect(() => {
@@ -58,7 +206,7 @@ export default function BudgetTrackingScreen() {
     }
   }, [user])
   
-  // Auto-update when receipts change (real-time!)
+  // Auto-update when receipts/spending change (real-time for selected month)
   useEffect(() => {
     console.log(`📊 Budget auto-updated: $${spent.toFixed(2)} spent this month`)
   }, [spent])
@@ -82,8 +230,9 @@ export default function BudgetTrackingScreen() {
       // Get monthly budget from user preferences
       const preferences = await userPreferencesService.loadPreferences(user.id)
       const budgetGoal = preferences?.budget?.monthly || 0
-      setMonthlyBudget(typeof budgetGoal === 'number' ? budgetGoal : parseFloat(budgetGoal) || 0)
-      setNewBudgetValue(budgetGoal.toString())
+      const value = typeof budgetGoal === 'number' ? budgetGoal : parseFloat(String(budgetGoal)) || 0
+      setMonthlyBudget(Math.round(value))
+      setNewBudgetValue(String(Math.round(value)))
       
     } catch (error) {
       console.error('Error loading budget preference:', error)
@@ -93,11 +242,12 @@ export default function BudgetTrackingScreen() {
   }
 
   const handleSaveBudget = async () => {
-    const newBudget = parseFloat(newBudgetValue)
-    if (isNaN(newBudget) || newBudget <= 0) {
+    const parsed = parseFloat(newBudgetValue)
+    if (isNaN(parsed) || parsed <= 0) {
       Alert.alert('Invalid Budget', 'Please enter a valid budget amount')
       return
     }
+    const newBudget = Math.round(parsed)
 
     if (!user?.id) return
     
@@ -105,7 +255,7 @@ export default function BudgetTrackingScreen() {
       // Load existing preferences
       const preferences: any = await userPreferencesService.loadPreferences(user.id) || {}
       
-      // Update budget
+      // Update budget (always store whole dollars)
       const updatedPreferences = {
         location: preferences.location || { country: '', province: '' },
         household: preferences.household || { size: '1', hasChildren: false, hasPets: false },
@@ -180,9 +330,29 @@ export default function BudgetTrackingScreen() {
         
         <View style={styles.headerTextContainer}>
           <Text style={styles.headerTitle}>Budget Tracking</Text>
-          <Text style={styles.headerSubtitle}>
-            {new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-          </Text>
+          <View style={styles.monthSelector}>
+            <Pressable
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+                goToPreviousMonth()
+              }}
+              style={styles.monthArrow}
+            >
+              <Ionicons name="chevron-back" size={18} color="#6A9571" />
+            </Pressable>
+            <Text style={styles.headerSubtitle}>
+              {selectedMonthLabel}
+            </Text>
+            <Pressable
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+                goToNextMonth()
+              }}
+              style={styles.monthArrow}
+            >
+              <Ionicons name="chevron-forward" size={18} color="#6A9571" />
+            </Pressable>
+          </View>
         </View>
 
         <Pressable 
@@ -215,7 +385,7 @@ export default function BudgetTrackingScreen() {
                   <View style={[styles.budgetStatIcon, { backgroundColor: 'rgba(255, 167, 38, 0.12)' }]}>
                     <Ionicons name="wallet-outline" size={24} color="#FFA726" />
                   </View>
-                  <Text style={styles.budgetStatValue}>${spent.toFixed(0)}</Text>
+                  <Text style={styles.budgetStatValue}>${Math.round(spent)}</Text>
                   <Text style={styles.budgetStatLabel}>Spent</Text>
                 </View>
                 
@@ -225,7 +395,7 @@ export default function BudgetTrackingScreen() {
                   <View style={[styles.budgetStatIcon, { backgroundColor: 'rgba(106, 149, 113, 0.12)' }]}>
                     <Ionicons name="flag" size={24} color="#6A9571" />
                   </View>
-                  <Text style={styles.budgetStatValue}>${monthlyBudget.toFixed(0)}</Text>
+                  <Text style={styles.budgetStatValue}>${Math.round(monthlyBudget)}</Text>
                   <Text style={styles.budgetStatLabel}>Budget</Text>
                 </View>
               </View>
@@ -253,7 +423,7 @@ export default function BudgetTrackingScreen() {
                       {onTrack ? 'On track for your goal!' : 'Getting close to budget'}
                     </Text>
                   </View>
-                  <Text style={styles.remainingText}>${remaining} left</Text>
+                  <Text style={styles.remainingText}>${Math.round(remaining)} left</Text>
                 </View>
               </View>
             </LinearGradient>
@@ -292,7 +462,7 @@ export default function BudgetTrackingScreen() {
                         </View>
                       </View>
                       <View style={styles.categoryAmount}>
-                        <Text style={styles.categoryAmountText}>${item.amount.toFixed(2)}</Text>
+                        <Text style={styles.categoryAmountText}>${Math.round(item.amount)}</Text>
                         <Text style={styles.categoryPercentage}>{Math.round(percentage)}%</Text>
                       </View>
                     </View>
@@ -327,7 +497,7 @@ export default function BudgetTrackingScreen() {
                             />
                           )}
                         </View>
-                        <Text style={styles.weeklyAmount}>${week.amount.toFixed(0)}</Text>
+                        <Text style={styles.weeklyAmount}>${Math.round(week.amount)}</Text>
                         <Text style={styles.weeklyLabel}>{week.week}</Text>
                       </View>
                     )
@@ -342,7 +512,7 @@ export default function BudgetTrackingScreen() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Receipt Summary</Text>
-            {getMonthlyReceipts().length > 0 && (
+            {monthlyReceiptsForSelectedMonth.length > 0 && (
               <Pressable
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
@@ -369,13 +539,13 @@ export default function BudgetTrackingScreen() {
             >
               <View style={styles.receiptStat}>
                 <Ionicons name="receipt" size={32} color="#6A9571" />
-                <Text style={styles.receiptCount}>{getMonthlyReceipts().length}</Text>
+                <Text style={styles.receiptCount}>{monthlyReceiptsForSelectedMonth.length}</Text>
                 <Text style={styles.receiptLabel}>
-                  {getMonthlyReceipts().length === 1 ? 'Receipt' : 'Receipts'} This Month
+                  {monthlyReceiptsForSelectedMonth.length === 1 ? 'Receipt' : 'Receipts'} This Month
                 </Text>
               </View>
               
-              {getMonthlyReceipts().length === 0 && (
+              {monthlyReceiptsForSelectedMonth.length === 0 && (
                 <Text style={styles.emptyStateText}>
                   Scan receipts to start tracking your spending
                 </Text>
@@ -489,6 +659,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: '#666666',
+  },
+  monthSelector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  monthArrow: {
+    paddingHorizontal: 4,
+    paddingVertical: 2,
   },
   editButton: {
     width: 44,

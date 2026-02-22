@@ -100,6 +100,12 @@ class LoggerService {
 
   // Convenience method for database errors
   dbError(operation: string, error: unknown, context?: LogContext): void {
+    // Skip logging if error is null or undefined to prevent "ERROR null" messages
+    if (error === null || error === undefined) {
+      this.warn(`Database Error: ${operation} - error is null/undefined`, context)
+      return
+    }
+    
     const errorContext: LogContext = {
       operation,
       ...context,

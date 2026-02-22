@@ -10,15 +10,36 @@ export function categorizeForShopping(itemName: string): string {
   if (name.match(/\b(chicken|beef|pork|fish|salmon|tuna|shrimp|turkey|steak|steaks|bacon|sausage|sausages|ham|lamb|crab|crabs|lobster|lobsters|meat|poultry|seafood|ground beef|ground pork|ground turkey|chicken breast|chicken thigh|chicken wing|chicken wings|ribs|ribeye|sirloin|filet|tenderloin|pork chop|pork chops|brisket|roast|turkey breast|turkey leg|duck|goose|venison|bison|veal|anchovy|anchovies|sardine|sardines|mackerel|cod|halibut|tilapia|trout|scallop|scallops|mussel|mussels|clam|clams|oyster|oysters|octopus|squid|calamari)\b/i)) {
     return 'Meat, Poultry & Seafood'
   }
+
+  // Beverages - check BEFORE Produce so "orange sports drink" doesn't become Produce.
+  // Use strong multi-word phrases first.
+  if (name.match(/\b(sports drink|energy drink|soft drink|sparkling water|seltzer|iced tea|lemonade|orange juice|apple juice|cranberry juice|grape juice)\b/i)) {
+    return 'Beverages'
+  }
+  if (name.match(/\b(water|juice|soda|pop|cola|pepsi|coke|coffee|tea|beer|wine|champagne|prosecco|smoothie|smoothies|beverage|beverages|drink|drinks)\b/i)) {
+    // Avoid "drink mix" / powders being treated as beverages (usually pantry staples)
+    if (!name.match(/\b(drink mix|mix|powder)\b/i)) {
+      return 'Beverages'
+    }
+  }
   
   // Produce - Fruits and Vegetables
   // Check for berries first (before other patterns that might match)
-  if (name.match(/\b(strawberry|strawberries|blueberry|blueberries|raspberry|raspberries|blackberry|blackberries|cranberry|cranberries|gooseberry|gooseberries|elderberry|elderberries)\b/i)) {
+  if (name.match(/\b(strawberry|strawberries|blueberry|blueberries|raspberry|raspberries|blackberry|blackberries|cranberry|cranberries|gooseberry|gooseberries|elderberry|elderberries|berry|berries)\b/i)) {
     return 'Produce'
   }
   
-  // Other fruits and vegetables
-  if (name.match(/\b(banana|bananas|apple|apples|orange|oranges|tomato|tomatoes|lettuce|cucumber|cucumbers|carrot|carrots|broccoli|spinach|avocado|avocados|lemon|lemons|lime|limes|onion|onions|potato|potatoes|grape|grapes|melon|melons|peach|peaches|pear|pears|plum|plums|mango|mangoes|pineapple|pineapples|kiwi|kiwis|celery|cabbage|cauliflower|asparagus|zucchini|squash|eggplant|mushroom|mushrooms|garlic|ginger|herb|herbs|basil|cilantro|parsley|mint|arugula|kale|chard|collard|mustard greens|bok choy|radish|radishes|turnip|turnips|beet|beets|sweet potato|sweet potatoes|yam|yams|corn|peas|green beans|snap peas|snow peas|bell pepper|bell peppers|red pepper|green pepper|yellow pepper|orange pepper|sweet pepper)\b/i)) {
+  // Coriander/cilantro (fresh herb) - check before Pantry so "coriander" isn't matched as spice
+  // "coriander seeds" and "ground coriander" stay in Pantry (handled later)
+  if (name.match(/\b(coriander leaves|fresh coriander)\b/i)) {
+    return 'Produce'
+  }
+  if (name.match(/\bcoriander\b/i) && !name.match(/\b(coriander seeds?|ground coriander)\b/i)) {
+    return 'Produce'
+  }
+
+  // Other fruits and vegetables (include watermelon, cantaloupe, honeydew and other melons explicitly)
+  if (name.match(/\b(banana|bananas|apple|apples|orange|oranges|tomato|tomatoes|lettuce|cucumber|cucumbers|carrot|carrots|broccoli|spinach|avocado|avocados|lemon|lemons|lime|limes|onion|onions|potato|potatoes|grape|grapes|melon|melons|watermelon|watermelons|cantaloupe|cantaloupes|honeydew|honeydews|peach|peaches|pear|pears|plum|plums|mango|mangoes|pineapple|pineapples|kiwi|kiwis|celery|cabbage|cauliflower|asparagus|zucchini|squash|eggplant|mushroom|mushrooms|garlic|ginger|herb|herbs|basil|cilantro|parsley|mint|arugula|kale|chard|collard|mustard greens|bok choy|radish|radishes|turnip|turnips|beet|beets|sweet potato|sweet potatoes|yam|yams|corn|peas|green beans|snap peas|snow peas|bell pepper|bell peppers|red pepper|green pepper|yellow pepper|orange pepper|sweet pepper)\b/i)) {
     return 'Produce'
   }
   

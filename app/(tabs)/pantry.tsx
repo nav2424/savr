@@ -17,10 +17,12 @@ import {
 import { TouchableOpacity } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar'
-import { useRouter, useLocalSearchParams } from 'expo-router'
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useSimpleTheme } from '../../lib/SimpleThemeContext'
 import { useListsUnified } from '../../lib/useListsUnified'
 import { usePantry } from '../../lib/PantryContext'
+import { useHousehold } from '../../lib/HouseholdContext'
 import { PantryItem as PantryItemType } from '../../lib/supabase'
 import { expiryPredictionService } from '../../lib/ExpiryPredictionService'
 import { capitalizeCategoryName } from '../../lib/ScanningService'
@@ -93,7 +95,7 @@ const CATEGORY_METADATA: CategoryMeta[] = [
   },
   {
     key: 'condiments, sauces & spreads',
-    label: 'Condiments, Sauces & Spreads',
+    label: 'Condiments and Sauces',
     emoji: '🥫',
     colors: { background: 'rgba(255, 118, 117, 0.08)', border: 'rgba(255, 118, 117, 0.2)' }
   },
@@ -105,7 +107,7 @@ const CATEGORY_METADATA: CategoryMeta[] = [
   },
   {
     key: 'plant-based proteins & legumes',
-    label: 'Plant-Based Proteins & Legumes',
+    label: 'Proteins and Legumes',
     emoji: '🍱',
     colors: { background: 'rgba(64, 221, 170, 0.08)', border: 'rgba(64, 221, 170, 0.2)' }
   },
@@ -163,6 +165,7 @@ export default function PantryScreen() {
   const { progressiveTheme } = useSimpleTheme()
   const router = useRouter()
   const params = useLocalSearchParams()
+  const insets = useSafeAreaInsets()
   const { lists, addItemToList } = useListsUnified()
   const { 
     items, 
@@ -176,6 +179,7 @@ export default function PantryScreen() {
     refreshItems,
     getExpiringItems
   } = usePantry()
+  const { currentHousehold } = useHousehold()
 
   const [selectedItem, setSelectedItem] = useState<PantryItemType | null>(null)
   const [modalVisible, setModalVisible] = useState(false)
@@ -187,6 +191,14 @@ export default function PantryScreen() {
   const [selectedFilter, setSelectedFilter] = useState(initialFilter)
   const lastProcessedFilter = useRef<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+
+  // Auto-refresh when screen comes into focus (e.g., after adding items from scan)
+  // Use silent refresh so we don't flash "Loading pantry..." and block the UI
+  useFocusEffect(
+    React.useCallback(() => {
+      refreshItems({ silent: true })
+    }, [refreshItems])
+  )
   const [showManualAddModal, setShowManualAddModal] = useState(false)
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set())
   const [aggregatedSelection, setAggregatedSelection] = useState<AggregatedPantryItem | null>(null)
@@ -843,6 +855,24 @@ const getCategoryDisplay = (category: string): string => {
           </Text>
           
           <View style={styles.emptyButtonsContainer}>
+            {/* Join Pantry - always show when pantry is empty so new users can join a shared pantry */}
+            <Pressable
+              style={styles.emptyButton}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+                router.push('/pantry-household')
+              }}
+            >
+              <LinearGradient
+                colors={['#6A9571', '#8AB896']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.emptyButtonGradient}
+              >
+                <Text style={styles.emptyButtonText}>👋 Join Pantry</Text>
+              </LinearGradient>
+            </Pressable>
+
             {/* Scan Items (Barcode) */}
             <Pressable
               style={styles.emptyButton}
@@ -917,7 +947,7 @@ const getCategoryDisplay = (category: string): string => {
     <View style={styles.cleanContainer}>
       <ExpoStatusBar style="dark" />
       
-      {/* Glassmorphic Gradient Background */}
+      {/* Full-bleed backgrounds */}
       <LinearGradient
         colors={['#FEFCF6', '#E9F1EB']}
         start={{ x: 0, y: 0 }}
@@ -932,7 +962,14 @@ const getCategoryDisplay = (category: string): string => {
       />
       
       {/* Header */}
-      <View style={styles.cleanHeader}>
+      <View style={[
+        styles.cleanHeader,
+        {
+          paddingTop: Math.max(60, insets.top + 8),
+          paddingLeft: Math.max(20, insets.left),
+          paddingRight: Math.max(20, insets.right + 24),
+        },
+      ]}>
         <View>
           <Text style={styles.cleanAppTitle}>SAVR</Text>
           <Text style={styles.headerSubtitle}>
@@ -940,6 +977,15 @@ const getCategoryDisplay = (category: string): string => {
           </Text>
         </View>
         <View style={styles.headerActions}>
+          <Pressable
+            style={styles.householdButton}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+              router.push('/pantry-household')
+            }}
+          >
+            <Ionicons name="people" size={20} color="#6A9571" />
+          </Pressable>
           <Pressable
             style={styles.addButton}
             onPress={() => {
@@ -978,7 +1024,6 @@ const getCategoryDisplay = (category: string): string => {
         </View>
       </View>
       
-      {/* Scrollable Content */}
       <ScrollView
         style={styles.content}
         showsVerticalScrollIndicator={false}
@@ -1096,7 +1141,7 @@ const getCategoryDisplay = (category: string): string => {
                       style={styles.categoryHeader}
                       onPress={() => toggleCategory(category)}
                     >
-                      <Text style={styles.categoryTitle}>
+                      <Text style={styles.categoryTitle} numberOfLines={1} ellipsizeMode="tail">
                         {getCategoryDisplay(category)}
                       </Text>
                       <View style={styles.categoryHeaderRight}>
@@ -1178,10 +1223,9 @@ const getCategoryDisplay = (category: string): string => {
           </View>
         )}
         
-        {/* Bottom Spacing */}
         <View style={styles.cleanBottomSpacing} />
       </ScrollView>
-      
+
       {/* SAGE Assistant */}
       <SageAssistant
         onPantryCommand={handleVoicePantryCommand}
@@ -1783,6 +1827,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
   },
+  householdButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 8,
+  },
   addButton: {
     borderRadius: 12,
     overflow: 'hidden',
@@ -1948,6 +2001,8 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   categoryTitle: {
+    flex: 1,
+    minWidth: 0,
     fontSize: 17,
     fontWeight: '700',
     color: '#000000',

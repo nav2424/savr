@@ -1,6 +1,16 @@
 // SAVR Barcode Service - Scans barcodes and fetches product data with household scaling
 import { supabase } from './supabase'
 import { userPreferencesService } from './UserPreferencesService'
+import {
+  detectAllergensEvidenceBased,
+  toDetectionInput,
+  toDetectionInputFromNormalized,
+  buildUserAllergenConfig,
+} from './allergenEngine'
+import { toLegacyAllergenCheckResult } from './allergenEngine/legacyAdapter'
+import { getSourceLabel, setBestResult } from './AllergenResultStore'
+import { normalizeOFFProduct, hasUsableOFFAllergenData } from './allergenEngine/offNormalizer'
+import { createScanSession } from './ScanSessionService'
 
 export interface ScannedProduct {
   barcode: string
@@ -41,7 +51,8 @@ export interface ScannedProduct {
 export type AllergenRiskLevel = "HIGH_RISK" | "POSSIBLE_RISK" | "NO_MATCH_FOUND" | "INSUFFICIENT_DATA"
 
 export interface AllergenMatch {
-  allergen: string              // user-selected allergen (canonical)
+  allergen: string              // user-selected allergen (canonical name)
+  allergenId?: string           // builtin/custom id for reporting
   matchedTerm: string           // what exactly triggered the hit
   source: "ingredients" | "allergens" | "traces" | "product_name"
   confidence: "HIGH" | "MEDIUM"
@@ -63,163 +74,28 @@ export interface AllergenCheckResult {
     tracesText?: string
     productName?: string
   }
+  /** When UNKNOWN: CTAs for fallback (scan label photo, paste ingredients) */
+  fallbackCtas?: {
+    scanLabelPhoto?: boolean
+    pasteIngredientsManually?: boolean
+  }
+  /** 0-100 OFF completeness; when UNKNOWN and <60, show "OFF data incomplete" */
+  sourceCoverageScore?: number
+  /** Where ingredients/allergen evidence came from */
+  dataSource?: 'OFF' | 'OCR' | 'MANUAL'
+  /** Human-readable source label for UI */
+  sourceLabel?: string
 }
 
 export interface ScanResult {
   found: boolean
   product?: ScannedProduct
   barcode: string
+  scanSessionId?: string
   needsManualEntry?: boolean
   suggestedCategory?: string
   errorMessage?: string
   allergenCheck?: AllergenCheckResult
-}
-
-// Allergen ontology: families, derivatives, multilingual terms
-interface AllergenProfile {
-  canonical: string
-  aliases: string[]      // direct synonyms + common label terms
-  derivatives: string[]  // ingredient derivatives
-  excludes?: string[]    // terms that should NOT trigger this allergen (false positive prevention)
-}
-
-const ALLERGEN_MAP: Record<string, AllergenProfile> = {
-  milk: {
-    canonical: 'milk',
-    aliases: [
-      'milk', 'dairy', 'cream', 'butter', 'cheese', 'yogurt', 'yoghurt', 'kefir', 'curds',
-      'ghee', 'buttermilk', 'sour cream', 'whipped cream', 'heavy cream', 'light cream',
-      'half and half', 'cream cheese', 'ricotta', 'mascarpone', 'cottage cheese'
-    ],
-    derivatives: [
-      'whey', 'casein', 'caseinate', 'lactose', 'lactalbumin', 'lactoglobulin',
-      'milk powder', 'milk solids', 'skim milk', 'whole milk', 'milk protein',
-      'milk fat', 'milk sugar', 'nonfat dry milk', 'dry milk', 'evaporated milk',
-      'condensed milk', 'milk derivative'
-    ],
-    excludes: [
-      // Prevent false positives - these contain "milk" but aren't dairy
-      'soy milk', 'almond milk', 'coconut milk', 'oat milk', 'rice milk', 'hemp milk',
-      'milk thistle', 'milkweed'
-    ],
-  },
-  egg: {
-    canonical: 'egg',
-    aliases: ['egg', 'eggs', 'egg yolk', 'egg white', 'albumen', 'albumin'],
-    derivatives: [
-      'ovalbumin', 'ovomucoid', 'ovoglobulin', 'lysozyme', 'lecithin',
-      'egg powder', 'dried egg', 'egg solids', 'egg protein', 'globulin'
-    ],
-    excludes: [
-      // Prevent false positives - these contain "egg" but aren't egg allergens
-      'vegetable', 'vegetables', 'legume', 'legumes', 'eggplant', 'eggnog', // eggnog actually contains eggs
-      'chocolate', 'cocoa', 'cacao' // Chocolate doesn't contain eggs (unless specifically added)
-    ],
-  },
-  peanut: {
-    canonical: 'peanut',
-    aliases: ['peanut', 'peanuts', 'groundnut', 'ground nuts', 'arachis'],
-    derivatives: [
-      'peanut oil', 'peanut butter', 'peanut flour', 'peanut protein',
-      'peanut extract', 'peanut paste', 'peanut meal'
-    ],
-  },
-  tree_nuts: {
-    canonical: 'tree_nuts',
-    aliases: ['tree nuts', 'tree nut', 'nuts', 'nut'],
-    derivatives: [
-      'almond', 'almonds', 'cashew', 'cashews', 'walnut', 'walnuts',
-      'pecan', 'pecans', 'hazelnut', 'hazelnuts', 'pistachio', 'pistachios',
-      'macadamia', 'macadamias', 'brazil nut', 'brazil nuts', 'pine nut', 'pine nuts',
-      'chestnut', 'chestnuts', 'beechnut', 'beechnuts', 'pili nut', 'pili nuts',
-      'almond oil', 'walnut oil', 'hazelnut oil', 'cashew butter', 'almond butter'
-    ],
-  },
-  wheat: {
-    canonical: 'wheat',
-    aliases: ['wheat', 'whole wheat', 'wheat flour', 'enriched wheat flour'],
-    derivatives: [
-      'durum', 'semolina', 'farina', 'bulgur', 'couscous', 'graham',
-      'wheat starch', 'wheat protein', 'wheat germ', 'wheat bran',
-      'wheat berries', 'wheat gluten', 'vital wheat gluten'
-    ],
-    excludes: [
-      // Prevent false positives - these contain "wheat" but aren't wheat allergens
-      'wheatgrass', 'sweet wheat'
-    ],
-  },
-  gluten: {
-    canonical: 'gluten',
-    aliases: ['gluten', 'wheat gluten', 'vital wheat gluten'],
-    derivatives: [
-      // Gluten grains
-      'wheat', 'barley', 'rye', 'malt', 'malt extract', 'malt syrup',
-      'malt vinegar', 'malt flour', 'barley malt', 'brewer\'s yeast',
-      'maltose', 'maltodextrin', 'triticale', 'farro', 'einkorn', 'emmer',
-      'rye flour', 'rye bread', 'rye malt',
-      // Processed ingredients that often contain gluten
-      'modified food starch', 'hydrolyzed vegetable protein',
-      'textured vegetable protein', 'natural flavoring', 'artificial flavoring',
-      'dextrin', 'caramel color', 'malt flavoring'
-    ],
-    excludes: [
-      // Prevent false positives - these contain "glut" but aren't gluten
-      'glutamate', 'monosodium glutamate', 'msg', 'glutamic acid', 'glutamine',
-      'glutathione', 'glutamic', 'glutamate sodium'
-    ],
-  },
-  soy: {
-    canonical: 'soy',
-    aliases: ['soy', 'soya', 'soybean', 'soybeans'],
-    derivatives: [
-      'tofu', 'tempeh', 'edamame', 'miso', 'soy sauce', 'soy lecithin',
-      'soy protein', 'soy oil', 'soy flour', 'soy isolate', 'soy concentrate',
-      'textured soy protein', 'soy milk', 'soy yogurt'
-    ],
-  },
-  fish: {
-    canonical: 'fish',
-    aliases: ['fish'],
-    derivatives: [
-      'anchovy', 'anchovies', 'bass', 'catfish', 'cod', 'flounder', 'grouper',
-      'haddock', 'hake', 'halibut', 'herring', 'mahi', 'perch', 'pike', 'pollock',
-      'salmon', 'sardine', 'sardines', 'snapper', 'sole', 'swordfish', 'tilapia',
-      'trout', 'tuna', 'fish oil', 'fish sauce', 'fish paste', 'fish extract'
-    ],
-  },
-  shellfish: {
-    canonical: 'shellfish',
-    aliases: ['shellfish', 'crustacean', 'crustaceans', 'mollusk', 'mollusks'],
-    derivatives: [
-      'shrimp', 'prawn', 'prawns', 'crab', 'crabs', 'lobster', 'lobsters',
-      'clam', 'clams', 'mussel', 'mussels', 'oyster', 'oysters', 'scallop', 'scallops',
-      'squid', 'octopus', 'crawfish', 'crayfish', 'crab meat', 'shrimp paste',
-      'lobster paste', 'crab extract'
-    ],
-  },
-  sesame: {
-    canonical: 'sesame',
-    aliases: ['sesame', 'sesame seeds', 'sesame seed'],
-    derivatives: [
-      'tahini', 'sesamol', 'sesamolin', 'sesame oil', 'sesame paste',
-      'halva', 'halvah', 'benne', 'simsim', 'sesame flour'
-    ],
-  },
-  mustard: {
-    canonical: 'mustard',
-    aliases: ['mustard', 'mustard seed', 'mustard seeds'],
-    derivatives: [
-      'mustard oil', 'mustard powder', 'mustard flour', 'mustard extract'
-    ],
-  },
-  sulfites: {
-    canonical: 'sulfites',
-    aliases: ['sulfites', 'sulphites', 'sulfiting agents'],
-    derivatives: [
-      'sulfur dioxide', 'sodium sulfite', 'sodium bisulfite', 'sodium metabisulfite',
-      'potassium sulfite', 'potassium bisulfite', 'potassium metabisulfite'
-    ],
-  },
 }
 
 class BarcodeService {
@@ -268,13 +144,24 @@ class BarcodeService {
   private async performScanBarcode(barcode: string, userId: string, scanKey: string): Promise<ScanResult> {
     try {
       let result: ScanResult | null = null
-      
+      let scanSessionId: string | undefined
+
       // 1. Check cache first (fastest)
       if (this.productCache.has(barcode)) {
         const cachedProduct = this.productCache.get(barcode)!
         const scaledProduct = await this.scaleForHousehold(cachedProduct, userId)
-        const allergenCheck = await this.checkForAllergens(scaledProduct, userId)
-        result = { found: true, product: scaledProduct, barcode, allergenCheck }
+        const session = createScanSession({
+          userId,
+          barcode,
+          offFound: true,
+          offProductName: cachedProduct.name,
+          offBrands: cachedProduct.brand,
+          hasIngredientData: Boolean(cachedProduct.ingredients || (cachedProduct.allergens?.length) || (cachedProduct.traces?.length)),
+        })
+        scanSessionId = session.id
+        const allergenCheck = await this.checkForAllergens(scaledProduct, userId, undefined, session.id, 'OFF')
+        setBestResult(session.id, allergenCheck, 'OFF')
+        result = { found: true, product: scaledProduct, barcode, scanSessionId, allergenCheck }
       }
 
       // 2. Check local database
@@ -283,36 +170,80 @@ class BarcodeService {
         if (localProduct) {
           this.productCache.set(barcode, localProduct)
           const scaledProduct = await this.scaleForHousehold(localProduct, userId)
-          const allergenCheck = await this.checkForAllergens(scaledProduct, userId)
-          result = { found: true, product: scaledProduct, barcode, allergenCheck }
+          const session = createScanSession({
+            userId,
+            barcode,
+            offFound: true,
+            offProductName: localProduct.name,
+            offBrands: localProduct.brand,
+            hasIngredientData: Boolean(localProduct.ingredients || (localProduct.allergens?.length) || (localProduct.traces?.length)),
+          })
+          scanSessionId = session.id
+          const allergenCheck = await this.checkForAllergens(scaledProduct, userId, undefined, session.id, 'OFF')
+          setBestResult(session.id, allergenCheck, 'OFF')
+          result = { found: true, product: scaledProduct, barcode, scanSessionId, allergenCheck }
         }
       }
 
       // 3. Try Open Food Facts API
       if (!result) {
-        const offProduct = await this.fetchFromOpenFoodFacts(barcode)
-        if (offProduct) {
-          // Save to local database for future
-          await this.saveToLocalDatabase(offProduct)
-          this.productCache.set(barcode, offProduct)
-          const scaledProduct = await this.scaleForHousehold(offProduct, userId)
-          const allergenCheck = await this.checkForAllergens(scaledProduct, userId)
-          result = { found: true, product: scaledProduct, barcode, allergenCheck }
+        try {
+          const offResponse = await fetch(`https://world.openfoodfacts.org/api/v2/product/${barcode}.json`)
+          const offData = await offResponse.json()
+
+          if (offData.status === 1 && offData.product) {
+            const offProductRaw = offData.product
+            const norm = normalizeOFFProduct(offProductRaw)
+            const hasData = norm && hasUsableOFFAllergenData(norm)
+
+            const session = createScanSession({
+              userId,
+              barcode,
+              offFound: true,
+              offProductCode: norm?.product_code ?? barcode,
+              offProductName: norm?.product_name,
+              offBrands: norm?.brands,
+              hasIngredientData: hasData,
+            })
+            scanSessionId = session.id
+
+            const offProduct = await this.fetchFromOpenFoodFacts(barcode)
+            if (offProduct) {
+              await this.saveToLocalDatabase(offProduct)
+              this.productCache.set(barcode, offProduct)
+              const scaledProduct = await this.scaleForHousehold(offProduct, userId)
+              const allergenCheck = await this.checkForAllergens(scaledProduct, userId, offData, session.id, 'OFF', norm)
+              setBestResult(session.id, allergenCheck, 'OFF')
+              result = { found: true, product: scaledProduct, barcode, scanSessionId, allergenCheck }
+            }
+          }
+        } catch (offErr) {
+          // OFF fetch failed - continue to not-found path
         }
       }
 
-      // 4. Product not found - suggest manual entry
+      // 4. Product not found - UNKNOWN, include session for fallback (OCR/paste)
       if (!result) {
+        const session = createScanSession({
+          userId,
+          barcode,
+          offFound: false,
+          hasIngredientData: false,
+        })
+        scanSessionId = session.id
+        const allergenCheck = await this.checkForAllergensUnknown(userId, session.id)
+        setBestResult(session.id, allergenCheck, 'OFF')
         result = {
           found: false,
           barcode,
+          scanSessionId,
           needsManualEntry: true,
           suggestedCategory: 'Other',
-          errorMessage: 'Product not found in database. Please add it manually.'
+          errorMessage: 'Product not found in database. Please add it manually.',
+          allergenCheck,
         }
       }
 
-      // Save scan history if product was found
       if (result.found && result.product) {
         await this.saveScanHistory(userId, barcode, result.product.name)
       }
@@ -686,6 +617,7 @@ class BarcodeService {
   }
 
   // Extract expiry date information from Open Food Facts product data
+  // NOTE: Expiry dates are NOT extracted from barcode scans - users should scan expiry dates separately
   private extractExpiryInfo(product: any): {
     expiryDate?: string
     shelfLife?: number
@@ -697,20 +629,10 @@ class BarcodeService {
       storageInstructions?: string
     } = {}
 
-    // Try to extract best before / use by date
-    const bestBefore = product.best_before_date || product.best_before
-    const useBy = product.use_by_date || product.use_by
-    const expiryDate = bestBefore || useBy
+    // Expiry dates are NOT extracted from barcode scans - removed per user request
+    // Users should scan expiry dates separately if needed
 
-    if (expiryDate) {
-      // Parse various date formats
-      const parsedDate = this.parseExpiryDate(expiryDate)
-      if (parsedDate) {
-        result.expiryDate = parsedDate
-      }
-    }
-
-    // Extract shelf life information
+    // Extract shelf life information (still useful for predictions)
     const shelfLife = product.shelf_life || product.shelf_life_days
     if (shelfLife) {
       const days = parseInt(shelfLife.toString())
@@ -958,46 +880,15 @@ class BarcodeService {
     }
   }
 
-  // Text normalization helpers for bulletproof matching
-  private normalize(text: string): string {
-    return text
-      .toLowerCase()
-      .normalize('NFKD')
-      .replace(/[\u0300-\u036f]/g, '') // strip accents
-      .replace(/[\(\)\[\]\{\}]/g, ' ')
-      .replace(/[^a-z0-9%/ \-]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-  }
-
-  private tokenize(text: string): string[] {
-    return this.normalize(text).split(' ').filter(Boolean)
-  }
-
-  // Check if a term matches as a whole word (prevents false positives)
-  private isWholeWordMatch(text: string, term: string): boolean {
-    const normalizedText = this.normalize(text)
-    const normalizedTerm = this.normalize(term)
-    
-    // Exact phrase match (for multi-word terms)
-    if (normalizedTerm.includes(' ')) {
-      return normalizedText.includes(normalizedTerm)
-    }
-    
-    // Whole word match using word boundaries
-    // Match: "milk" in "contains milk" or "milk protein"
-    // Don't match: "milk" in "buttermilk" or "milky"
-    const wordBoundaryRegex = new RegExp(`\\b${normalizedTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
-    return wordBoundaryRegex.test(normalizedText)
-  }
-
-  // Comprehensive allergen ontology with families, derivatives, and multilingual terms
-  private getAllergenProfile(canonical: string): AllergenProfile | null {
-    return ALLERGEN_MAP[canonical] || null
-  }
-
-  // Check for allergens in a product based on user preferences (BULLETPROOF VERSION)
-  async checkForAllergens(product: ScannedProduct, userId: string): Promise<AllergenCheckResult> {
+  // Check for allergens - EVIDENCE-BASED ENGINE (single source of truth)
+  async checkForAllergens(
+    product: ScannedProduct,
+    userId: string,
+    offProductData?: any,
+    scanSessionId?: string,
+    dataSource: 'OFF' | 'OCR' | 'MANUAL' = 'OFF',
+    normalizedOFF?: import('./allergenEngine/offNormalizer').NormalizedOFFData
+  ): Promise<AllergenCheckResult> {
     try {
       const preferences = await userPreferencesService.loadPreferences(userId)
       const userAllergensRaw = preferences?.dietary?.allergies || []
@@ -1013,263 +904,147 @@ class BarcodeService {
         }
       }
 
-      // Normalize user allergens to canonical form
-      const userAllergens = userAllergensRaw.map(a => this.normalizeToCanonical(a))
-      const userAllergensCanonical = Array.from(new Set(userAllergens))
+      const input = normalizedOFF
+        ? toDetectionInputFromNormalized(normalizedOFF, product.name)
+        : toDetectionInput(product, offProductData?.product)
+      const userConfig = buildUserAllergenConfig(userAllergensRaw)
+      const output = detectAllergensEvidenceBased(input, userConfig)
+      const result = toLegacyAllergenCheckResult(output, userAllergensRaw) as AllergenCheckResult
 
-      // Extract all relevant text fields from product
-      const productName = product.name || ''
-      const ingredientsText = product.ingredients || ''
-      const allergensText = (product.allergens || []).join(', ')
-      const tracesText = (product.traces || []).join(', ')
-
-      // Fail-safe: Check if we have ANY data
-      const hasAnyData = Boolean(
-        (ingredientsText && ingredientsText.trim()) ||
-        (allergensText && allergensText.trim()) ||
-        (tracesText && tracesText.trim())
-      )
-
-      if (!hasAnyData) {
-        return {
-          hasAllergens: false,
-          detectedAllergens: [],
-          userAllergens: userAllergensRaw,
-          riskLevel: 'INSUFFICIENT_DATA',
-          matches: [],
-          message: 'We couldn\'t verify ingredients for this product. Please confirm from the label.',
-          scannedText: {
-            ingredientsText,
-            allergensText,
-            tracesText,
-            productName
-          }
-        }
+      if (result.scannedText) {
+        result.scannedText.productName = product.name
       }
 
-      // Create searchable blob from all text fields
-      const blob = this.normalize([productName, ingredientsText, allergensText, tracesText]
-        .filter(Boolean)
-        .join(' | '))
-      const tokens = new Set(this.tokenize(blob))
+      result.dataSource = dataSource
+      result.sourceLabel = getSourceLabel(dataSource)
 
-      const matches: AllergenMatch[] = []
+      logAllergenScan({
+        userId,
+        barcode: product.barcode,
+        productName: product.name,
+        output,
+        scanSessionId,
+        dataSource,
+        offFound: !!offProductData?.product,
+        sourceQuality: normalizedOFF?.source_quality,
+      }).catch(() => {})
 
-      const addMatch = (
-        canonical: string,
-        matchedTerm: string,
-        source: AllergenMatch['source'],
-        confidence: AllergenMatch['confidence']
-      ) => {
-        // Avoid duplicates
-        const existing = matches.find(m => 
-          m.allergen === canonical && 
-          m.matchedTerm === matchedTerm && 
-          m.source === source
-        )
-        if (!existing) {
-          matches.push({ allergen: canonical, matchedTerm, source, confidence })
-        }
-      }
-
-      // Check each user allergen
-      for (const userAllergenCanonical of userAllergensCanonical) {
-        const profile = this.getAllergenProfile(userAllergenCanonical)
-        
-        // Check exclusions first - if any exclusion matches in ingredients, skip this allergen
-        const searchableText = [ingredientsText, allergensText, tracesText]
-          .filter(Boolean)
-          .join(' | ')
-        const normalizedSearchable = this.normalize(searchableText)
-        
-        if (profile?.excludes) {
-          const hasExclusion = profile.excludes.some(exclusion => {
-            const normalizedExclusion = this.normalize(exclusion)
-            return this.isWholeWordMatch(normalizedSearchable, normalizedExclusion)
-          })
-          if (hasExclusion) {
-            console.log(`Skipping ${userAllergenCanonical} due to exclusion match`)
-            continue // Skip this allergen if exclusion found
-          }
-        }
-        
-        // Get all terms to check (aliases + derivatives + canonical)
-        const terms = profile
-          ? [...profile.aliases, ...profile.derivatives, profile.canonical]
-          : [userAllergenCanonical]
-
-        for (const term of terms) {
-          const normalizedTerm = this.normalize(term)
-
-          // CRITICAL: Only check in ingredients/allergens/traces, NOT product name
-          // Product names can contain false positives (e.g., "chocolate" might match "egg" incorrectly)
-          const searchableText = [ingredientsText, allergensText, tracesText]
-            .filter(Boolean)
-            .join(' | ')
-          const normalizedSearchable = this.normalize(searchableText)
-
-          // Layer A: Phrase match (for multi-word terms) - must be exact phrase
-          if (normalizedTerm.includes(' ')) {
-            if (this.isWholeWordMatch(normalizedSearchable, normalizedTerm)) {
-              const source = this.inferSource(
-                term,
-                ingredientsText,
-                allergensText,
-                tracesText,
-                productName
-              )
-              addMatch(
-                profile?.canonical || userAllergenCanonical,
-                term,
-                source,
-                'HIGH'
-              )
-              break // Found match, move to next allergen
-            }
-            continue
-          }
-
-          // Layer B: Whole word match (prevents false positives like "milk" in "buttermilk")
-          // Only match if it's a complete word, not part of another word
-          // ONLY check in ingredients/allergens/traces, NOT product name
-          if (this.isWholeWordMatch(normalizedSearchable, normalizedTerm)) {
-            const source = this.inferSource(
-              term,
-              ingredientsText,
-              allergensText,
-              tracesText,
-              productName
-            )
-            addMatch(
-              profile?.canonical || userAllergenCanonical,
-              term,
-              source,
-              'HIGH'
-            )
-            break // Found match, move to next allergen
-          }
-
-          // Layer C: Substring match - REMOVED to prevent false positives
-          // This was causing too many false matches (e.g., "gluten" matching in "glutamate")
-          // Only use exact token matches for accuracy
-        }
-      }
-
-      // Determine risk level
-      const detected = Array.from(new Set(matches.map(m => m.allergen)))
-      const hasTracesHit = matches.some(m => m.source === 'traces')
-      
-      let riskLevel: AllergenRiskLevel
-      if (detected.length === 0) {
-        riskLevel = 'NO_MATCH_FOUND'
-      } else if (hasTracesHit) {
-        riskLevel = 'POSSIBLE_RISK'
-      } else {
-        riskLevel = 'HIGH_RISK'
-      }
-
-      // Generate user-friendly message
-      let message: string
-      if (riskLevel === 'NO_MATCH_FOUND') {
-        message = 'All good for your household.'
-      } else if (riskLevel === 'POSSIBLE_RISK') {
-        message = 'Potential allergy risk (cross-contact or facility warning).'
-      } else {
-        message = `Allergies detected: ${detected.join(', ')}`
-      }
-
-      // Map canonical back to user's original allergen names for display
-      const detectedAllergensDisplay = detected.map(canonical => {
-        const original = userAllergensRaw.find(raw => 
-          this.normalizeToCanonical(raw) === canonical
-        )
-        return original || canonical
-      })
-
-      return {
-        // Legacy fields
-        hasAllergens: detected.length > 0,
-        detectedAllergens: detectedAllergensDisplay,
-        userAllergens: userAllergensRaw,
-        // New bulletproof fields
-        riskLevel,
-        matches,
-        message,
-        scannedText: {
-          ingredientsText,
-          allergensText,
-          tracesText,
-          productName
-        }
-      }
+      return result as AllergenCheckResult
     } catch (error) {
       console.error('Error checking for allergens:', error)
+      const prefs = await userPreferencesService.loadPreferences(userId)
+      return {
+        hasAllergens: false,
+        detectedAllergens: [],
+        userAllergens: prefs?.dietary?.allergies || [],
+        riskLevel: 'INSUFFICIENT_DATA',
+        matches: [],
+        message: 'Ingredients unavailable; cannot verify allergens. Scan label photo or paste ingredients manually to check.'
+      }
+    }
+  }
+
+  private async checkForAllergensUnknown(userId: string, scanSessionId: string): Promise<AllergenCheckResult> {
+    const prefs = await userPreferencesService.loadPreferences(userId)
+    const userAllergensRaw = prefs?.dietary?.allergies || []
+    if (userAllergensRaw.length === 0) {
       return {
         hasAllergens: false,
         detectedAllergens: [],
         userAllergens: [],
-        riskLevel: 'INSUFFICIENT_DATA',
+        riskLevel: 'NO_MATCH_FOUND',
         matches: [],
-        message: 'Error checking allergens. Please verify from the label.'
+        message: 'No allergies set for your household.',
+        dataSource: 'OFF',
+        sourceLabel: getSourceLabel('OFF'),
       }
     }
-  }
-
-  // Infer which source field contained the match
-  private inferSource(
-    term: string,
-    ingredients: string,
-    allergens: string,
-    traces: string,
-    name: string
-  ): AllergenMatch['source'] {
-    const normalizedTerm = this.normalize(term)
-    const normalizedAllergens = this.normalize(allergens)
-    const normalizedTraces = this.normalize(traces)
-    const normalizedIngredients = this.normalize(ingredients)
-    const normalizedName = this.normalize(name)
-
-    if (normalizedAllergens.includes(normalizedTerm)) return 'allergens'
-    if (normalizedTraces.includes(normalizedTerm)) return 'traces'
-    if (normalizedIngredients.includes(normalizedTerm)) return 'ingredients'
-    if (normalizedName.includes(normalizedTerm)) return 'product_name'
-    return 'ingredients' // Default fallback
-  }
-
-  // Normalize user-entered allergen to canonical form
-  private normalizeToCanonical(allergen: string): string {
-    const normalized = this.normalize(allergen)
-    
-    // Map common variations to canonical forms
-    const canonicalMap: Record<string, string> = {
-      'dairy': 'milk',
-      'milk products': 'milk',
-      'lactose': 'milk',
-      'egg': 'egg',
-      'eggs': 'egg',
-      'peanut': 'peanut',
-      'peanuts': 'peanut',
-      'tree nut': 'tree_nuts',
-      'tree nuts': 'tree_nuts',
-      'nuts': 'tree_nuts',
-      'fish': 'fish',
-      'shellfish': 'shellfish',
-      'crustacean': 'shellfish',
-      'mollusk': 'shellfish',
-      'soy': 'soy',
-      'soya': 'soy',
-      'soybean': 'soy',
-      'wheat': 'wheat',
-      'gluten': 'gluten',
-      'sesame': 'sesame',
-      'mustard': 'mustard',
-      'sulfites': 'sulfites',
-      'sulphites': 'sulfites'
+    return {
+      hasAllergens: false,
+      detectedAllergens: [],
+      userAllergens: userAllergensRaw,
+      riskLevel: 'INSUFFICIENT_DATA',
+      matches: [],
+      message: 'Ingredients unavailable; cannot verify allergens.',
+      fallbackCtas: { scanLabelPhoto: true, pasteIngredientsManually: true },
+      dataSource: 'OFF',
+      sourceLabel: getSourceLabel('OFF'),
     }
+  }
 
-    return canonicalMap[normalized] || normalized
+  // Legacy fallback when OFF detection throws
+  private async checkForAllergensLegacy(product: ScannedProduct, userId: string): Promise<AllergenCheckResult> {
+    return this.checkForAllergens(product, userId)
+  }
+
+  // NOTE: Old legacy allergen detection and checkForAllergensUsingOFF removed.
+  // All detection now uses evidence-based engine in lib/allergenEngine.
+}
+
+/** Log allergen scan for audit/debug. Fire-and-forget; does not block. */
+async function logAllergenScan(params: {
+  userId: string
+  barcode: string
+  productName?: string
+  output: { scan_log: { ingredients_text_used: string; contains_text_used: string; may_contain_text_used: string; has_ingredient_data: boolean; source_coverage_score?: number }; overall_status: string; matched_allergens: Array<{ allergen_id: string; allergen_name: string; severity: string; section: string; match_text: string }> }
+  scanSessionId?: string
+  dataSource?: 'OFF' | 'OCR' | 'MANUAL'
+  offFound?: boolean
+  sourceQuality?: { ingredients_present: boolean; allergens_tags_present: boolean; traces_tags_present: boolean }
+}): Promise<void> {
+  const row: Record<string, unknown> = {
+    user_id: params.userId,
+    barcode: params.barcode,
+    product_name: params.productName,
+    ingredients_text_used: params.output.scan_log.ingredients_text_used,
+    contains_text_used: params.output.scan_log.contains_text_used,
+    may_contain_text_used: params.output.scan_log.may_contain_text_used,
+    has_ingredient_data: params.output.scan_log.has_ingredient_data,
+    overall_status: (params.output.scan_log.has_ingredient_data ? params.output.overall_status : 'UNKNOWN') as string,
+    matched_allergens: params.output.matched_allergens,
+    source_coverage_score: params.output.scan_log.source_coverage_score,
+    scan_session_id: params.scanSessionId,
+    data_source: params.dataSource ?? 'OFF',
+    off_found: params.offFound,
+  }
+  const { error } = await supabase.from('allergen_scan_logs').insert(row)
+  if (error) {
+    // Table may not exist or RLS may block; ignore
   }
 }
 
 export const barcodeService = BarcodeService.getInstance()
+
+/** Build AllergenCheckResult from engine output for OCR/manual flows (with dataSource) */
+export async function buildAllergenCheckResultFromEngine(
+  input: { ingredients_text: string; contains_text?: string; may_contain_text?: string },
+  userId: string,
+  dataSource: 'OCR' | 'MANUAL'
+): Promise<AllergenCheckResult> {
+  const prefs = await userPreferencesService.loadPreferences(userId)
+  const userAllergensRaw = prefs?.dietary?.allergies || []
+  if (userAllergensRaw.length === 0) {
+    return {
+      hasAllergens: false,
+      detectedAllergens: [],
+      userAllergens: [],
+      riskLevel: 'NO_MATCH_FOUND',
+      matches: [],
+      message: 'No allergies set for your household.',
+      dataSource,
+      sourceLabel: getSourceLabel(dataSource),
+    }
+  }
+  const userConfig = buildUserAllergenConfig(userAllergensRaw)
+  const output = detectAllergensEvidenceBased(input, userConfig)
+  const result = toLegacyAllergenCheckResult(output, userAllergensRaw) as AllergenCheckResult
+  result.dataSource = dataSource
+  result.sourceLabel = getSourceLabel(dataSource)
+  if (result.scannedText) {
+    result.scannedText.ingredientsText = output.scan_log.ingredients_text_used
+    result.scannedText.allergensText = output.scan_log.contains_text_used
+    result.scannedText.tracesText = output.scan_log.may_contain_text_used
+  }
+  return result
+}
 

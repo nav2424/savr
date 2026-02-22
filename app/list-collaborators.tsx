@@ -15,6 +15,8 @@ import { StatusBar as ExpoStatusBar } from 'expo-status-bar'
 import { useRouter, useLocalSearchParams } from 'expo-router'
 import { useCollaborativeLists } from '../lib/CollaborativeListsContext'
 import * as Haptics from 'expo-haptics'
+import { useToast } from '../lib/ToastContext'
+import { logger } from '../lib/Logger'
 
 const { width } = Dimensions.get('window')
 
@@ -31,6 +33,7 @@ export default function ListCollaboratorsScreen() {
   const router = useRouter()
   const { id } = useLocalSearchParams()
   const { getListCollaborators, removeCollaborator } = useCollaborativeLists()
+  const { showToast } = useToast()
   
   const [collaborators, setCollaborators] = useState<Collaborator[]>([])
   const [loading, setLoading] = useState(true)
@@ -60,8 +63,8 @@ export default function ListCollaboratorsScreen() {
       }))
       setCollaborators(mappedCollaborators)
     } catch (error) {
-      console.error('Error loading collaborators:', error)
-      Alert.alert('Error', 'Failed to load collaborators')
+      logger.error('Error loading collaborators', { error })
+      showToast('Failed to load collaborators.', { kind: 'error', durationMs: 3500 })
     } finally {
       setLoading(false)
     }
@@ -69,11 +72,7 @@ export default function ListCollaboratorsScreen() {
 
   const handleCollaboratorPress = (collaborator: Collaborator) => {
     if (collaborator.role === 'owner') {
-      Alert.alert(
-        'List Owner',
-        'This person owns the list and cannot be removed.',
-        [{ text: 'OK' }]
-      )
+      showToast('This person owns the list and cannot be removed.', { kind: 'info', durationMs: 3000 })
       return
     }
 
@@ -86,11 +85,7 @@ export default function ListCollaboratorsScreen() {
 
     // Prevent removing owner
     if (selectedCollaborator.role === 'owner' || selectedCollaborator.id.startsWith('owner-')) {
-      Alert.alert(
-        'Cannot Remove Owner',
-        'The list owner cannot be removed from the list.',
-        [{ text: 'OK' }]
-      )
+      showToast('The list owner cannot be removed.', { kind: 'warning', durationMs: 3000 })
       return
     }
 
@@ -106,16 +101,16 @@ export default function ListCollaboratorsScreen() {
             try {
               const result = await removeCollaborator(selectedCollaborator.id)
               if (result && result.error) {
-                Alert.alert('Error', result.error.message || 'Failed to remove collaborator')
+                showToast(result.error.message || 'Failed to remove collaborator.', { kind: 'error', durationMs: 3500 })
                 return
               }
               setCollaborators(prev => prev.filter(c => c.id !== selectedCollaborator.id))
               setShowActionModal(false)
               setSelectedCollaborator(null)
-              Alert.alert('Success', 'Collaborator removed successfully')
+              showToast('Collaborator removed.', { kind: 'success' })
             } catch (error: any) {
-              console.error('Error removing collaborator:', error)
-              Alert.alert('Error', error.message || 'Failed to remove collaborator')
+              logger.error('Error removing collaborator', { error })
+              showToast(error?.message || 'Failed to remove collaborator.', { kind: 'error', durationMs: 3500 })
             }
           }
         }

@@ -1,57 +1,43 @@
-# ========================================
-# SAVR Environment Variables Template
-# ========================================
-#
-# Copy this file to .env and fill in your actual values
-# DO NOT commit .env to git (already in .gitignore)
-#
-# ========================================
+# Environment Variables Template
 
-# ────────────────────────────────────────
-# Supabase Configuration
-# ────────────────────────────────────────
-EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
+# OpenAI API (for LLM features)
+OPENAI_API_KEY=your_openai_api_key_here
+PRIMARY_MODEL=gpt-4o
+FALLBACK_MODEL=gpt-4o-mini
 
-# ────────────────────────────────────────
-# OpenAI Configuration (for AI features)
-# ────────────────────────────────────────
-EXPO_PUBLIC_OPENAI_API_KEY=sk-your-openai-key-here
+# OpenRouter (optional fallback)
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_MODEL=openrouter/auto
 
-# ────────────────────────────────────────
-# RevenueCat Configuration (for subscriptions)
-# Get from: https://app.revenuecat.com
-# ────────────────────────────────────────
-EXPO_PUBLIC_REVENUECAT_IOS_KEY=appl_YOUR_IOS_KEY_HERE
-EXPO_PUBLIC_REVENUECAT_ANDROID_KEY=goog_YOUR_ANDROID_KEY_HERE
+# Google Cloud Vision API (for OCR)
+# Get your API key from: https://console.cloud.google.com/apis/credentials
+# Enable "Cloud Vision API" in your Google Cloud project
+GOOGLE_CLOUD_VISION_API_KEY=your_google_cloud_vision_api_key_here
 
-# ────────────────────────────────────────
-# Image Services (for recipe images)
-# ────────────────────────────────────────
-# Get from: https://unsplash.com/developers
-UNSPLASH_ACCESS_KEY=22_07O2VKOqb5TJ5J8qvGkdOsVhey4Axf1_PJJSjFUE
-# Or use the public version:
-# EXPO_PUBLIC_UNSPLASH_ACCESS_KEY=your-unsplash-access-key-here
+# Server Configuration
+PORT=3000
+MAX_RETRIES=2
+INITIAL_DELAY_MS=600
 
-# ────────────────────────────────────────
-# Optional: Additional Services
-# ────────────────────────────────────────
-# EXPO_PUBLIC_FLIPP_API_KEY=your-flipp-key
-# EXPO_PUBLIC_ANALYTICS_KEY=your-analytics-key
+# Expo/React Native (client-side)
+EXPO_PUBLIC_SUPABASE_URL=your_supabase_url
+EXPO_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 
-# ========================================
-# SETUP CHECKLIST
-# ========================================
-#
-# [ ] Created Supabase project
-# [ ] Added Supabase URL & key
-# [ ] Created OpenAI account
-# [ ] Added OpenAI API key
-# [ ] Created RevenueCat account
-# [ ] Added RevenueCat iOS key
-# [ ] Added RevenueCat Android key
-# [ ] Renamed this file to .env
-# [ ] Verified .env is in .gitignore
-#
-# ========================================
+# RevenueCat (when EXPO_PUBLIC_ENABLE_PAYWALL=true)
+# Get keys from: https://app.revenuecat.com → Project → API Keys
+EXPO_PUBLIC_RC_IOS_API_KEY=appl_your_ios_key
+# EXPO_PUBLIC_RC_ANDROID_API_KEY=goog_your_android_key
+# EXPO_PUBLIC_REVENUECAT_WEB_API_KEY=rcb_your_web_key  # for Expo Go
+# Optional: specific offering ID (e.g. "default"). If unset, uses the Current offering.
+# EXPO_PUBLIC_REVENUECAT_OFFERING_ID=default
 
+# Receipt OCR server (optional). For dev build on a physical device, set to your machine's LAN IP
+# so the app can reach the OCR server (e.g. EXPO_PUBLIC_API_BASE=http://192.168.1.100:3000).
+# If unset, Expo Go uses the Metro host; dev build may fall back to LLM and feel slower.
+# EXPO_PUBLIC_API_BASE=http://localhost:3000
+
+# Email verification redirect (production)
+# Set to your deployed web app URL + /email-verified (e.g. https://yourapp.com/email-verified).
+# Add this exact URL to Supabase Dashboard → Auth → URL Configuration → Redirect URLs.
+# Leave unset to use app deep link (savr:///email-verification).
+# EXPO_PUBLIC_EMAIL_VERIFICATION_REDIRECT_URL=https://yourapp.com/email-verified

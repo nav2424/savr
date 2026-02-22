@@ -12,8 +12,8 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  Dimensions,
-  Alert
+  Alert,
+  Dimensions
 } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import * as Haptics from 'expo-haptics'
@@ -21,6 +21,7 @@ import { Audio } from 'expo-av'
 import * as Speech from 'expo-speech'
 import { Ionicons } from '@expo/vector-icons'
 import { useRouter } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { chatWithSage, parseCommandFromResponse } from '../lib/openai'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
@@ -30,7 +31,6 @@ import { receiptsService } from '../lib/ReceiptsService'
 // RECIPES TEMPORARILY DISABLED FOR LAUNCH
 // import SimpleRecipeImage from './SimpleRecipeImage'
 
-const { width, height } = Dimensions.get('window')
 
 interface Message {
   id: string
@@ -152,6 +152,7 @@ export default function SageAssistant({ onPantryCommand, onListCommand }: SageAs
   const { user } = useAuth()
   const { items: pantryItems } = usePantry()
   const router = useRouter()
+  const insets = useSafeAreaInsets()
   const [showSage, setShowSage] = useState(false)
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -236,6 +237,7 @@ export default function SageAssistant({ onPantryCommand, onListCommand }: SageAs
   const deriveQuickOptionsFromMessage = (text?: string): string[] | undefined => {
     // DISABLED: No quick options should be shown
     return undefined
+    const t = text ?? ''
     if (t.includes('how much time do you have')) {
       return ['Quick (15-30 min)', 'Moderate (30-60 min)', 'I have time (60+ min)']
     }
@@ -418,10 +420,13 @@ export default function SageAssistant({ onPantryCommand, onListCommand }: SageAs
       
       // Get API key from config
       const config = require('../config').default
-      const apiKey = config?.openaiApiKey || process.env.EXPO_PUBLIC_OPENAI_API_KEY
+      const apiKey = config?.openaiApiKey
       
       if (!apiKey) {
-        throw new Error('OpenAI API key not configured')
+        // Remove loading message and fall back to typing
+        setMessages(prev => prev.filter(m => m.id !== loadingId))
+        Alert.alert('Voice unavailable', 'Voice transcription requires the server proxy with OPENAI_API_KEY.')
+        return
       }
       
       const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -475,7 +480,7 @@ export default function SageAssistant({ onPantryCommand, onListCommand }: SageAs
       
       // Get API key
       const config = require('../config').default
-      const apiKey = config?.openaiApiKey || process.env.EXPO_PUBLIC_OPENAI_API_KEY
+      const apiKey = config?.openaiApiKey
       
       if (!apiKey) {
         // Fallback to device TTS if no key
@@ -705,10 +710,11 @@ export default function SageAssistant({ onPantryCommand, onListCommand }: SageAs
     try {
       // Get API key
       const config = require('../config').default
-      const apiKey = config?.openaiApiKey || process.env.EXPO_PUBLIC_OPENAI_API_KEY
+      const apiKey = config?.openaiApiKey
       
       if (!apiKey) {
-        throw new Error('OpenAI API key not configured')
+        Alert.alert('Voice unavailable', 'Voice transcription requires the server proxy with OPENAI_API_KEY.')
+        return
       }
       
       // Call OpenAI Whisper API
@@ -1287,10 +1293,12 @@ export default function SageAssistant({ onPantryCommand, onListCommand }: SageAs
 
   return (
     <>
-      {/* Floating SAGE Button - Glassmorphic */}
+      {/* Floating SAGE Button */}
       <Animated.View style={[
         styles.sageButton,
         {
+          bottom: Math.max(100, 60 + insets.bottom),
+          right: Math.max(20, insets.right),
           transform: [{ scale: pulseAnim }],
         }
       ]}>
@@ -1649,7 +1657,7 @@ export default function SageAssistant({ onPantryCommand, onListCommand }: SageAs
 }
 
 const styles = StyleSheet.create({
-  // Floating SAGE Button - Professional & Premium
+  // Floating SAGE Button - size from layout system
   sageButton: {
     position: 'absolute',
     bottom: 100,

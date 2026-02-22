@@ -2,6 +2,7 @@
 import { supabase } from './supabase'
 import { userPreferencesService } from './UserPreferencesService'
 import { ingredientUnitService } from './IngredientUnitService'
+import config from '../config'
 
 export interface GeneratedRecipe {
   id: string
@@ -176,10 +177,7 @@ class AIRecipeGenerator {
     count: number,
     preferences?: any
   ): Promise<GeneratedRecipe[]> {
-    const apiKey =
-      process.env.OPENAI_API_KEY ||
-      process.env.EXPO_PUBLIC_OPENAI_API_KEY ||
-      process.env.EXPO_PUBLIC_SAVR_OPENAI_KEY
+    const apiKey = config.openaiApiKey
 
     if (!apiKey) {
       console.warn('🔒 OpenAI API key not found. Skipping LLM recipe generation.')

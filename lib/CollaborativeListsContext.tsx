@@ -1,9 +1,11 @@
 // SAVR Collaborative Lists Context - Real-time list management with Supabase
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react'
+import { Alert } from 'react-native'
 import { collaborativeListsService } from './CollaborativeListsService'
 import { recategorizeItem } from './ItemCategorizer'
 import { List, ListItem as SupabaseListItem, Collaborator, Activity } from './supabase'
 import { useAuth } from './AuthContext'
+import { logger } from './Logger'
 
 // Local list item interface (matches existing app structure)
 export interface ListItem {
@@ -34,6 +36,8 @@ export interface ListData {
 interface CollaborativeListsContextType {
   lists: ListData[]
   loading: boolean
+  listsLoadError: Error | null
+  refreshLists: () => Promise<void>
   addList: (name: string, icon: string) => Promise<void>
   deleteList: (listId: string) => Promise<void>
   addItemToList: (listId: string, item: Omit<ListItem, 'id' | 'completed' | 'addedBy' | 'addedDate'>) => Promise<void>
@@ -54,30 +58,158 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
   const { user } = useAuth()
   const [lists, setLists] = useState<ListData[]>([])
   const [loading, setLoading] = useState(true)
+  const [listsLoadError, setListsLoadError] = useState<Error | null>(null)
+  const listsRef = useRef<ListData[]>([])
+  const pendingDeletesRef = useRef<Set<string>>(new Set())
 
-  // Load user's lists when authenticated
   useEffect(() => {
-    if (user) {
-      loadLists()
-    } else {
-      setLists([])
-      setLoading(false)
-    }
-  }, [user])
+    listsRef.current = lists
+  }, [lists])
 
-  const loadLists = async () => {
+  const subscribeToList = useCallback((listId: string) => {
+    // Unsubscribe from existing subscription if any
+    collaborativeListsService.unsubscribeFromList(listId)
+    
+    logger.debug('Setting up real-time subscription for list', { listId })
+    
+    collaborativeListsService.subscribeToList(listId, {
+      onItemAdded: (item) => {
+        logger.debug('Real-time item added', { listId, itemName: item.name })
+        setLists(prev => prev.map(list => {
+          if (list.id === listId) {
+            // Check if item already exists by ID (from optimistic update)
+            const existingById = list.items.find(i => i.id === item.id)
+            if (existingById) {
+              // Item already exists with this ID, skip
+              logger.debug('Skipping duplicate item (already exists by id)', { listId, itemName: item.name })
+              return list
+            }
+
+            // Check for temp item with same name (optimistic update to replace)
+            const tempItemIndex = list.items.findIndex(i => 
+              i.id.startsWith('temp-') &&
+              i.name.toLowerCase().trim() === item.name.toLowerCase().trim()
+            )
+            if (tempItemIndex !== -1) {
+              // Replace temp item with real one from database
+              logger.debug('Replacing temp item with real item', { listId, itemName: item.name })
+              const updatedItems = [...list.items]
+              updatedItems[tempItemIndex] = {
+                id: item.id,
+                name: item.name,
+                category: item.category,
+                quantity: item.quantity,
+                completed: item.completed,
+                addedBy: item.added_by_name,
+                addedDate: item.added_date,
+                notes: item.notes,
+              }
+              return {
+                ...list,
+                items: updatedItems,
+                itemCount: updatedItems.length,
+              }
+            }
+
+            // Check for duplicate by name (prevent duplicates from real-time)
+            const duplicateByName = list.items.find(i => 
+              i.name.toLowerCase().trim() === item.name.toLowerCase().trim() &&
+              !i.id.startsWith('temp-')
+            )
+            if (duplicateByName) {
+              // Duplicate detected, skip adding
+              logger.debug('Skipping duplicate item (by name)', { listId, itemName: item.name })
+              return list
+            }
+
+            // New item from another user - add it INSTANTLY
+            logger.debug('Adding new item from another user', { listId, itemName: item.name, addedBy: item.added_by_name })
+            const newItem: ListItem = {
+              id: item.id,
+              name: item.name,
+              category: item.category,
+              quantity: item.quantity,
+              completed: item.completed,
+              addedBy: item.added_by_name,
+              addedDate: item.added_date,
+              notes: item.notes,
+            }
+            const newItems = [...list.items, newItem]
+            return {
+              ...list,
+              items: newItems,
+              itemCount: newItems.length,
+            }
+          }
+          return list
+        }))
+      },
+      onItemUpdated: (item) => {
+        logger.debug('Real-time item updated', { listId, itemName: item.name })
+        setLists(prev => prev.map(list => {
+          if (list.id === listId) {
+            const updatedItems = list.items.map(i => {
+              if (i.id === item.id) {
+                return {
+                  id: item.id,
+                  name: item.name,
+                  category: item.category,
+                  quantity: item.quantity,
+                  completed: item.completed,
+                  addedBy: item.added_by_name,
+                  addedDate: item.added_date,
+                  notes: item.notes,
+                }
+              }
+              return i
+            })
+            const completedCount = updatedItems.filter(i => i.completed).length
+            return {
+              ...list,
+              items: updatedItems,
+              completedCount,
+            }
+          }
+          return list
+        }))
+      },
+      onItemDeleted: (itemId) => {
+        logger.debug('Real-time item deleted', { listId, itemId })
+        setLists(prev => prev.map(list => {
+          if (list.id === listId) {
+            const updatedItems = list.items.filter(i => i.id !== itemId)
+            const completedCount = updatedItems.filter(i => i.completed).length
+            return {
+              ...list,
+              items: updatedItems,
+              itemCount: updatedItems.length,
+              completedCount,
+            }
+          }
+          return list
+        }))
+      },
+    })
+    
+    logger.debug('Real-time subscription active for list', { listId })
+  }, [])
+
+  const loadLists = useCallback(async () => {
     if (!user) return
 
     setLoading(true)
+    setListsLoadError(null)
     try {
       const { data: listsData, error } = await collaborativeListsService.getUserLists()
       
       if (error) {
         console.error('Error loading lists:', error)
+        setListsLoadError(error instanceof Error ? error : new Error(String(error)))
+        setLists([])
         return
       }
 
-      if (listsData) {
+      if (listsData && listsData.length > 0) {
         // Load items and collaborators for each list in parallel
         const listsWithItems = await Promise.all(
           listsData.map(async (list: List) => {
@@ -128,151 +260,44 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
           })
         )
 
-        setLists(listsWithItems)
+        // Never re-add lists that are in the process of being deleted (prevents race with refreshLists)
+        const pending = pendingDeletesRef.current
+        const filtered = pending.size > 0
+          ? listsWithItems.filter(l => !pending.has(l.id))
+          : listsWithItems
+        setLists(filtered)
+        setListsLoadError(null)
         
         // Subscribe to real-time updates for each list
-        console.log(`🔔 Setting up real-time subscriptions for ${listsWithItems.length} lists`)
-        listsWithItems.forEach(list => {
+        logger.debug('Setting up real-time subscriptions for lists', { count: filtered.length })
+        filtered.forEach(list => {
           subscribeToList(list.id)
         })
-        console.log(`✅ All real-time subscriptions set up`)
+        logger.debug('All real-time subscriptions set up', { count: listsWithItems.length })
+      } else {
+        setLists([])
+        setListsLoadError(null)
       }
     } catch (error) {
-      console.error('Error loading lists:', error)
+      logger.error('Error loading lists', { error })
+      setListsLoadError(error instanceof Error ? error : new Error(String(error)))
+      setLists([])
     } finally {
       setLoading(false)
     }
-  }
+  }, [user, subscribeToList])
 
-  const subscribeToList = (listId: string) => {
-    // Unsubscribe from existing subscription if any
-    collaborativeListsService.unsubscribeFromList(listId)
-    
-    console.log(`🔔 Setting up real-time subscription for list: ${listId}`)
-    
-    collaborativeListsService.subscribeToList(listId, {
-      onItemAdded: (item) => {
-        console.log(`📥 Real-time: Item added to list ${listId}:`, item.name)
-        setLists(prev => prev.map(list => {
-          if (list.id === listId) {
-            // Check if item already exists by ID (from optimistic update)
-            const existingById = list.items.find(i => i.id === item.id)
-            if (existingById) {
-              // Item already exists with this ID, skip
-              console.log(`⏭️ Item ${item.name} already exists, skipping duplicate`)
-              return list
-            }
+  // Load user's lists when authenticated
+  useEffect(() => {
+    if (user) {
+      loadLists()
+    } else {
+      setLists([])
+      setLoading(false)
+    }
+  }, [user, loadLists])
 
-            // Check for temp item with same name (optimistic update to replace)
-            const tempItemIndex = list.items.findIndex(i => 
-              i.id.startsWith('temp-') &&
-              i.name.toLowerCase().trim() === item.name.toLowerCase().trim()
-            )
-            if (tempItemIndex !== -1) {
-              // Replace temp item with real one from database
-              console.log(`🔄 Replacing temp item with real item: ${item.name}`)
-              const updatedItems = [...list.items]
-              updatedItems[tempItemIndex] = {
-                id: item.id,
-                name: item.name,
-                category: item.category,
-                quantity: item.quantity,
-                completed: item.completed,
-                addedBy: item.added_by_name,
-                addedDate: item.added_date,
-                notes: item.notes,
-              }
-              return {
-                ...list,
-                items: updatedItems,
-                itemCount: updatedItems.length,
-              }
-            }
-
-            // Check for duplicate by name (prevent duplicates from real-time)
-            const duplicateByName = list.items.find(i => 
-              i.name.toLowerCase().trim() === item.name.toLowerCase().trim() &&
-              !i.id.startsWith('temp-')
-            )
-            if (duplicateByName) {
-              // Duplicate detected, skip adding
-              console.log('⚠️ Duplicate item detected from real-time, skipping:', item.name)
-              return list
-            }
-
-            // New item from another user - add it INSTANTLY
-            console.log(`✨ Adding new item from another user: ${item.name} (added by ${item.added_by_name})`)
-            const newItem: ListItem = {
-              id: item.id,
-              name: item.name,
-              category: item.category,
-              quantity: item.quantity,
-              completed: item.completed,
-              addedBy: item.added_by_name,
-              addedDate: item.added_date,
-              notes: item.notes,
-            }
-            const newItems = [...list.items, newItem]
-            return {
-              ...list,
-              items: newItems,
-              itemCount: newItems.length,
-            }
-          }
-          return list
-        }))
-      },
-      onItemUpdated: (item) => {
-        console.log(`📝 Real-time: Item updated in list ${listId}:`, item.name)
-        setLists(prev => prev.map(list => {
-          if (list.id === listId) {
-            const updatedItems = list.items.map(i => {
-              if (i.id === item.id) {
-                return {
-                  id: item.id,
-                  name: item.name,
-                  category: item.category,
-                  quantity: item.quantity,
-                  completed: item.completed,
-                  addedBy: item.added_by_name,
-                  addedDate: item.added_date,
-                  notes: item.notes,
-                }
-              }
-              return i
-            })
-            const completedCount = updatedItems.filter(i => i.completed).length
-            return {
-              ...list,
-              items: updatedItems,
-              completedCount,
-            }
-          }
-          return list
-        }))
-      },
-      onItemDeleted: (itemId) => {
-        console.log(`🗑️ Real-time: Item deleted from list ${listId}:`, itemId)
-        setLists(prev => prev.map(list => {
-          if (list.id === listId) {
-            const updatedItems = list.items.filter(i => i.id !== itemId)
-            const completedCount = updatedItems.filter(i => i.completed).length
-            return {
-              ...list,
-              items: updatedItems,
-              itemCount: updatedItems.length,
-              completedCount,
-            }
-          }
-          return list
-        }))
-      },
-    })
-    
-    console.log(`✅ Real-time subscription active for list: ${listId}`)
-  }
-
-  const addList = async (name: string, icon: string) => {
+  const addList = useCallback(async (name: string, icon: string) => {
     if (!user) return
 
     // Optimistic update - create list IMMEDIATELY with temp ID
@@ -297,7 +322,7 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
     // Create in database (non-blocking, happens in background)
     const { data, error } = await collaborativeListsService.createList(name, icon)
     if (error) {
-      console.error('Error creating list:', error)
+      logger.error('Error creating list', { error })
       // Rollback on error
       setLists(prev => prev.filter(l => l.id !== tempId))
       return
@@ -322,29 +347,40 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
       // Set up real-time subscription for the new list
       subscribeToList(data.id)
     }
-  }
+  }, [user, subscribeToList])
 
-  const deleteList = async (listId: string) => {
+  const deleteList = useCallback(async (listId: string) => {
+    // Track pending delete so loadLists/refreshLists won't re-add this list (race fix)
+    pendingDeletesRef.current.add(listId)
+
     // Optimistic update - IMMEDIATELY remove from UI (synchronous)
     collaborativeListsService.unsubscribeFromList(listId)
     setLists(prev => prev.filter(list => list.id !== listId))
 
-    // Delete in database (non-blocking, happens in background)
-    const { error } = await collaborativeListsService.deleteList(listId)
-    if (error) {
-      console.error('Error deleting list:', error)
-      // On error, reload lists to restore
-      loadLists()
-      return
+    try {
+      const { error } = await collaborativeListsService.deleteList(listId)
+      if (error) {
+        logger.error('Error deleting list', { error })
+        pendingDeletesRef.current.delete(listId)
+        loadLists()
+        Alert.alert(
+          'Could Not Delete',
+          'Only the list owner can delete this list. The list has been restored.',
+          [{ text: 'OK' }]
+        )
+        return
+      }
+    } finally {
+      pendingDeletesRef.current.delete(listId)
     }
-  }
+  }, [loadLists])
 
-  const addItemToList = async (
+  const addItemToList = useCallback(async (
     listId: string,
     item: Omit<ListItem, 'id' | 'completed' | 'addedBy' | 'addedDate'>
   ) => {
     // Check for duplicates FIRST
-    const targetList = lists.find(l => l.id === listId)
+    const targetList = listsRef.current.find(l => l.id === listId)
     if (targetList) {
       const isDuplicate = targetList.items.some(existingItem => 
         existingItem.name.toLowerCase().trim() === item.name.toLowerCase().trim()
@@ -394,7 +430,7 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
 
     // Ensure category is always provided (use AI-detected or default)
     const categoryToUse = item.category || 'Groceries'
-    console.log('🎯 Adding item to list:', { name: item.name, category: categoryToUse })
+    logger.debug('Adding item to list', { listId, name: item.name, category: categoryToUse })
     
     const { error, data } = await collaborativeListsService.addItem(listId, {
       name: item.name,
@@ -406,7 +442,7 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
     })
 
     if (error) {
-      console.error('Error adding item:', error)
+      logger.error('Error adding item to list', { error, listId, itemName: item.name })
       // Rollback optimistic update on error
       setLists(prev => prev.map(list => {
         if (list.id === listId) {
@@ -443,11 +479,11 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
         return list
       }))
     }
-  }
+  }, [])
 
-  const updateListItem = async (listId: string, itemId: string, updates: Partial<ListItem>) => {
+  const updateListItem = useCallback(async (listId: string, itemId: string, updates: Partial<ListItem>) => {
     // Store original item for rollback
-    const originalItem = lists.find(l => l.id === listId)?.items.find(i => i.id === itemId)
+    const originalItem = listsRef.current.find(l => l.id === listId)?.items.find(i => i.id === itemId)
     
     // Optimistic update - IMMEDIATELY update UI (synchronous)
     setLists(prev => {
@@ -471,7 +507,7 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
     })
 
     if (error) {
-      console.error('Error updating item:', error)
+      logger.error('Error updating list item', { error, listId, itemId })
       // Rollback on error
       if (originalItem) {
         setLists(prev => prev.map(list => {
@@ -487,10 +523,10 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
         }))
       }
     }
-  }
+  }, [])
 
-  const toggleItemCompletion = async (listId: string, itemId: string) => {
-    const list = lists.find(l => l.id === listId)
+  const toggleItemCompletion = useCallback(async (listId: string, itemId: string) => {
+    const list = listsRef.current.find(l => l.id === listId)
     const item = list?.items.find(i => i.id === itemId)
     
     if (!item) return
@@ -519,7 +555,7 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
     const { error } = await collaborativeListsService.toggleItemCompletion(itemId, newCompletedState)
 
     if (error) {
-      console.error('Error toggling item:', error)
+      logger.error('Error toggling item completion', { error, listId, itemId })
       // Rollback on error
       setLists(prev => prev.map(l => {
         if (l.id === listId) {
@@ -536,11 +572,11 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
         return l
       }))
     }
-  }
+  }, [])
 
-  const deleteItemFromList = async (listId: string, itemId: string) => {
+  const deleteItemFromList = useCallback(async (listId: string, itemId: string) => {
     // Store original items for rollback
-    const originalList = lists.find(l => l.id === listId)
+    const originalList = listsRef.current.find(l => l.id === listId)
     
     // Optimistic update - IMMEDIATELY remove from UI (synchronous)
     setLists(prev => {
@@ -562,7 +598,7 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
     const { error } = await collaborativeListsService.deleteItem(itemId)
 
     if (error) {
-      console.error('Error deleting item:', error)
+      logger.error('Error deleting item from list', { error, listId, itemId })
       // Rollback on error
       if (originalList) {
         setLists(prev => prev.map(list => 
@@ -570,9 +606,9 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
         ))
       }
     }
-  }
+  }, [])
 
-  const joinListByCode = async (shareCode: string): Promise<{ success: boolean; error?: string }> => {
+  const joinListByCode = useCallback(async (shareCode: string): Promise<{ success: boolean; error?: string }> => {
     const { data, error } = await collaborativeListsService.joinListByCode(shareCode)
     
     if (error) {
@@ -580,7 +616,7 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
     }
 
     if (data) {
-      console.log(`✅ Successfully joined list: ${data.id} (${data.name})`)
+      logger.info('Successfully joined list', { listId: data.id, name: data.name })
       // Reload all lists and set up subscriptions
       await loadLists()
       // Ensure subscription is active for the newly joined list
@@ -589,27 +625,27 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
     }
 
     return { success: false, error: 'Unknown error' }
-  }
+  }, [loadLists, subscribeToList])
 
-  const getListCollaborators = async (listId: string): Promise<Collaborator[]> => {
+  const getListCollaborators = useCallback(async (listId: string): Promise<Collaborator[]> => {
     const { data, error } = await collaborativeListsService.getListCollaborators(listId)
     if (error) {
-      console.error('Error getting collaborators:', error)
+      logger.error('Error getting collaborators', { error, listId })
       return []
     }
     return data || []
-  }
+  }, [])
 
-  const getListActivity = async (listId: string): Promise<Activity[]> => {
+  const getListActivity = useCallback(async (listId: string): Promise<Activity[]> => {
     const { data, error } = await collaborativeListsService.getListActivity(listId)
     if (error) {
-      console.error('Error getting activity:', error)
+      logger.error('Error getting activity', { error, listId })
       return []
     }
     return data || []
-  }
+  }, [])
 
-  const inviteCollaborator = async (
+  const inviteCollaborator = useCallback(async (
     listId: string,
     email: string,
     role: 'editor' | 'viewer'
@@ -621,29 +657,24 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
     }
 
     return { success: true }
-  }
+  }, [])
 
-  const removeCollaborator = async (collaboratorId: string): Promise<{ error?: any }> => {
+  const removeCollaborator = useCallback(async (collaboratorId: string): Promise<{ error?: any }> => {
     const { error } = await collaborativeListsService.removeCollaborator(collaboratorId)
     if (error) {
-      console.error('Error removing collaborator:', error)
+      logger.error('Error removing collaborator', { error, collaboratorId })
       return { error }
     }
     return {}
-  }
+  }, [])
 
   // Function to ensure subscription is active for a specific list
   const ensureSubscription = useCallback((listId: string) => {
-    // Check if list exists in our state
-    const listExists = lists.some(list => list.id === listId)
-    if (listExists) {
-      // Ensure subscription is active
-      subscribeToList(listId)
-      console.log(`✅ Ensured real-time subscription is active for list: ${listId}`)
-    } else {
-      console.log(`⚠️ List ${listId} not found in state, cannot set up subscription`)
-    }
-  }, [lists])
+    // Always set up subscription - don't check if list exists in state
+    // This ensures subscriptions work even if list hasn't loaded yet
+    subscribeToList(listId)
+    logger.debug('Ensured real-time subscription is active for list', { listId })
+  }, [subscribeToList])
 
   // Cleanup subscriptions on unmount
   useEffect(() => {
@@ -657,6 +688,8 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
       value={{
         lists,
         loading,
+        listsLoadError,
+        refreshLists: loadLists,
         addList,
         deleteList,
         addItemToList,

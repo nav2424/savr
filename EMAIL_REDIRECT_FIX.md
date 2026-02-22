@@ -1,93 +1,48 @@
-# 🔗 Fix Email Verification Redirect (Localhost Issue)
+# Email Verification Redirect Fix
 
-## The Problem
-When you click the email verification link, it redirects to `localhost` instead of opening the app.
+## Problem
 
-## The Solution
-Configure Supabase to use your app's deep link URL for email verification redirects.
+Verification links in signup emails were sending users to `localhost` or an app deep link that opened in a browser with no useful page. Users should land on a **web page** that says: **"Your email has been verified. Please return to the app."** and offers an "Open in app" option.
 
----
+## What Was Done
 
-## ✅ Step 1: Configure Redirect URL in Supabase
+1. **`app/email-verified.tsx`**  
+   New route that shows:
+   - "Your email has been verified."
+   - "Please return to the app."
+   - "Open in app" button that deep-links to the SAVR app (and passes the hash so the app can restore the session if needed).
 
-1. **Go to Supabase Dashboard**
-   - Navigate to: https://app.supabase.com
-   - Select your project
+2. **Production redirect URL**  
+   When `EXPO_PUBLIC_EMAIL_VERIFICATION_REDIRECT_URL` is set, signup and "Resend verification email" use it as the redirect URL. That URL must point to your **deployed web app** at `/email-verified` (e.g. `https://yourapp.com/email-verified`).
 
-2. **Open URL Configuration**
-   - Go to **Settings** → **Auth** → **URL Configuration**
+3. **Config and env**  
+   - `app.config.js` passes `EXPO_PUBLIC_EMAIL_VERIFICATION_REDIRECT_URL` into `extra` so the app can read it at runtime.
+   - `ENV_TEMPLATE.txt` documents the variable.
 
-3. **Add Redirect URL**
-   - Find **"Redirect URLs"** section
-   - Click **"Add URL"**
-   - Enter: `savr://email-verification`
-   - Click **Save**
+## Setup (Production)
 
-4. **Also Add Site URL (if needed)**
-   - Make sure **"Site URL"** is set (can be any valid URL, like `https://savr.app`)
-   - This is required for Supabase to work properly
+1. **Deploy the app for web**  
+   Deploy the Expo app as a website (e.g. Vercel, Netlify, or Expo’s web build) so that `/email-verified` is a real URL (e.g. `https://yourapp.com/email-verified`).
 
----
+2. **Set the env variable**  
+   In your build/deploy environment, set:
+   ```bash
+   EXPO_PUBLIC_EMAIL_VERIFICATION_REDIRECT_URL=https://yourapp.com/email-verified
+   ```
+   Use your actual web base URL; the path must be `/email-verified` to match the new route.
 
-## ✅ Step 2: Verify Email Template
+3. **Allow the URL in Supabase**  
+   In **Supabase Dashboard → Authentication → URL Configuration**:
+   - **Site URL**: your main app URL (e.g. `https://yourapp.com`).
+   - **Redirect URLs**: add exactly:
+     ```
+     https://yourapp.com/email-verified
+     ```
+   (and any other redirect URLs you need, e.g. `savr:///email-verification` for deep link).
 
-1. Go to **Authentication** → **Email Templates**
-2. Click **"Confirm signup"** template
-3. Make sure the template uses `{{ .ConfirmationURL }}` in the body
-4. The `{{ .ConfirmationURL }}` will automatically use the redirect URL you configured
+4. **Rebuild**  
+   Rebuild the app (and redeploy web) so the new env and route are used. New signups will get verification emails that point to your web `/email-verified` page.
 
----
+## Local / No env set
 
-## ✅ Step 3: Test It
-
-1. **Sign up with a test email**
-2. **Check your inbox** for the verification email
-3. **Click the verification link**
-4. **The app should open** (not localhost) ✅
-
----
-
-## 🔍 If Still Redirecting to Localhost
-
-### Option A: Use a Web URL (Alternative)
-
-If Supabase doesn't accept the custom scheme directly:
-
-1. **Create a simple web redirect page** (hosted anywhere)
-   - The page should redirect to `savr://email-verification`
-   - Example: `https://yourdomain.com/verify` → redirects to `savr://email-verification`
-
-2. **Use that web URL in Supabase**
-   - Add `https://yourdomain.com/verify` to Redirect URLs
-   - Update `emailRedirectTo` in code to use this URL
-
-### Option B: Check Development vs Production
-
-- **Development**: Use `exp://localhost:8081/--/email-verification`
-- **Production**: Use `savr://email-verification`
-
-The code automatically uses the correct URL based on environment.
-
----
-
-## 📋 Checklist
-
-- [ ] Added `savr://email-verification` to Supabase Redirect URLs
-- [ ] Site URL is configured in Supabase
-- [ ] Email template uses `{{ .ConfirmationURL }}`
-- [ ] Tested signup and clicked verification link
-- [ ] App opens (not localhost) ✅
-
----
-
-## 🆘 Still Not Working?
-
-1. **Check Supabase Logs**: Settings → Logs → Auth Logs
-2. **Verify Redirect URL**: Make sure it's exactly `savr://email-verification` (no typos)
-3. **Test Deep Link**: Try opening `savr://email-verification` manually in a browser/terminal
-4. **Check App Scheme**: Verify `scheme: "savr"` in `app.config.js`
-
----
-
-**That's it!** After configuring the redirect URL, email verification links should open your app instead of localhost. 🎉
-
+If `EXPO_PUBLIC_EMAIL_VERIFICATION_REDIRECT_URL` is **not** set, the app keeps using the app deep link (`savr:///email-verification` or `Linking.createURL('/email-verification')`). In that case, clicking the link in email may open the app directly (if the OS supports it) or still open a browser; for a consistent “verified” message, set the env and use the web `/email-verified` page as above.

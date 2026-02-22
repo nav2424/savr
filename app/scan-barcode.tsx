@@ -6,6 +6,7 @@ import BarcodeScanner from '../components/BarcodeScanner'
 import ScanResultModal from '../components/ScanResultModal'
 import ManualProductEntry from '../components/ManualProductEntry'
 import { ScanResult, ScannedProduct } from '../lib/BarcodeService'
+import { getBestResult } from '../lib/AllergenResultStore'
 import * as Haptics from 'expo-haptics'
 
 export default function ScanBarcodeScreen() {
@@ -67,7 +68,13 @@ export default function ScanBarcodeScreen() {
       <ScanResultModal
         visible={showResultModal}
         product={scanResult?.product || null}
-        allergenCheck={scanResult?.allergenCheck}
+        allergenCheck={
+          scanResult?.scanSessionId
+            ? (getBestResult(scanResult.scanSessionId)?.result ?? scanResult?.allergenCheck)
+            : scanResult?.allergenCheck
+        }
+        scanSessionId={scanResult?.scanSessionId}
+        barcode={scanResult?.barcode}
         onClose={handleCloseResult}
         onAddAnother={handleAddAnother}
       />

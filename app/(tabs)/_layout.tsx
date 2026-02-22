@@ -2,11 +2,13 @@ import React from "react"
 import { Tabs } from "expo-router"
 import { Text, View, StyleSheet, Animated } from "react-native"
 import { useSimpleTheme } from "../../lib/SimpleThemeContext"
-import { HomeIcon, PantryIcon, ListsIcon, MoreIcon, AllergiesIcon } from "../../components/NavigationIcons"
+import { HomeIcon, PantryIcon, ListsIcon, MoreIcon, AllergiesIcon, RecipesIcon } from "../../components/NavigationIcons"
+import { config } from "../../config"
 
-// Glassmorphism Tab Icon Component
-function ProfessionalTabIcon({ iconComponent, isActive }: { iconComponent: React.ComponentType<{ size?: number; color?: string; isActive?: boolean }>; isActive: boolean }) {
+// Glassmorphism Tab Icon Component – uses tab bar tint (green when active, grey when inactive)
+function ProfessionalTabIcon({ iconComponent, isActive, color }: { iconComponent: React.ComponentType<{ size?: number; color?: string; isActive?: boolean }>; isActive: boolean; color?: string }) {
   const IconComponent = iconComponent
+  const iconColor = color ?? '#6A9571'
 
   return (
     <View style={styles.tabItemContainer}>
@@ -17,7 +19,7 @@ function ProfessionalTabIcon({ iconComponent, isActive }: { iconComponent: React
       <View style={styles.iconWrapper}>
         <IconComponent 
           size={18} 
-          color='#6A9571' 
+          color={iconColor} 
           isActive={isActive}
         />
       </View>
@@ -52,7 +54,7 @@ export default function TabsLayout() {
         backdropFilter: 'blur(40px)',
       }, 
       tabBarActiveTintColor: '#6A9571', 
-      tabBarInactiveTintColor: '#6A9571', 
+      tabBarInactiveTintColor: '#8E8E93', 
       headerShown: false,
       tabBarLabelStyle: { 
         fontSize: 10, 
@@ -72,42 +74,44 @@ export default function TabsLayout() {
         name="index" 
         options={{ 
           title: "Home", 
-          tabBarIcon: ({ focused }) => <ProfessionalTabIcon iconComponent={HomeIcon} isActive={focused} />
+          tabBarIcon: ({ focused, color }) => <ProfessionalTabIcon iconComponent={HomeIcon} isActive={focused} color={color} />
         }} 
       />
-      {/* Recipes tab excluded - file exists but not shown in navigation */}
+      {/* Recipes tab: shown when EXPO_PUBLIC_ENABLE_RECIPES=true */}
       <Tabs.Screen 
         name="recipes" 
         options={{ 
-          href: null, // Prevents auto-registration from showing in tab bar
+          title: "Recipes",
+          href: config.enableRecipes ? "/(tabs)/recipes" : null,
+          tabBarIcon: ({ focused, color }) => <ProfessionalTabIcon iconComponent={RecipesIcon} isActive={focused} color={color} />,
         }} 
       />
       <Tabs.Screen 
         name="allergies" 
         options={{ 
           title: "Allergies", 
-          tabBarIcon: ({ focused }) => <ProfessionalTabIcon iconComponent={AllergiesIcon} isActive={focused} />
+          tabBarIcon: ({ focused, color }) => <ProfessionalTabIcon iconComponent={AllergiesIcon} isActive={focused} color={color} />
         }} 
       />
       <Tabs.Screen 
         name="pantry" 
         options={{ 
           title: "Pantry", 
-          tabBarIcon: ({ focused }) => <ProfessionalTabIcon iconComponent={PantryIcon} isActive={focused} />
+          tabBarIcon: ({ focused, color }) => <ProfessionalTabIcon iconComponent={PantryIcon} isActive={focused} color={color} />
         }} 
       />
       <Tabs.Screen 
         name="lists" 
         options={{ 
           title: "Lists", 
-          tabBarIcon: ({ focused }) => <ProfessionalTabIcon iconComponent={ListsIcon} isActive={focused} />
+          tabBarIcon: ({ focused, color }) => <ProfessionalTabIcon iconComponent={ListsIcon} isActive={focused} color={color} />
         }} 
       />
       <Tabs.Screen 
         name="more" 
         options={{ 
           title: "More", 
-          tabBarIcon: ({ focused }) => <ProfessionalTabIcon iconComponent={MoreIcon} isActive={focused} />
+          tabBarIcon: ({ focused, color }) => <ProfessionalTabIcon iconComponent={MoreIcon} isActive={focused} color={color} />
         }} 
       />
     </Tabs>

@@ -23,12 +23,6 @@ const REQUIRED_CONFIG: RequiredConfig[] = [
     description: 'Required for database authentication',
     required: true,
   },
-  {
-    key: 'EXPO_PUBLIC_OPENAI_API_KEY',
-    name: 'OpenAI API Key',
-    description: 'Required for AI features (SAGE assistant, recipe generation)',
-    required: false, // Optional - app can work without AI
-  },
 ]
 
 function readEnv(name: string): string | undefined {
@@ -73,7 +67,15 @@ export function validateConfiguration(): void {
   if (missing.length > 0) {
     const errorMessage = `Missing required configuration:\n${missing.map(m => `  - ${m}`).join('\n')}\n\nPlease add these to your .env file or app.config.js`
     logger.error('Configuration validation failed', { missing })
-    throw new ConfigurationError(errorMessage, missing.join(', '))
+    
+    // In production, log error but don't crash - let the app try to run
+    // Supabase will handle missing config gracefully
+    if (__DEV__) {
+      throw new ConfigurationError(errorMessage, missing.join(', '))
+    } else {
+      console.error('⚠️ Configuration validation failed:', missing)
+      console.error('⚠️ Some features may not work. Please configure environment variables in EAS.')
+    }
   }
 
   if (warnings.length > 0 && __DEV__) {

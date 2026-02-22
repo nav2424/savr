@@ -44,6 +44,65 @@ export interface UserPreferences {
     recipeSuggestions: boolean
     weeklyReminders: boolean
   }
+  /** Active shared pantry household id (for multi-user sync) */
+  activeHouseholdId?: string | null
+}
+
+/** Default preferences used when merging partial onboarding data */
+export const DEFAULT_USER_PREFERENCES: UserPreferences = {
+  location: { country: '', province: '' },
+  household: { size: '', hasChildren: null, hasPets: null },
+  dietary: { preferences: [], allergies: [], cuisines: [] },
+  shopping: { frequency: '', stores: [], method: '' },
+  budget: { monthly: '', savingsGoal: '' },
+  notifications: {
+    pushNotifications: true,
+    expiryAlerts: true,
+    listUpdates: true,
+    recipeSuggestions: true,
+    weeklyReminders: false,
+  },
+  activeHouseholdId: null as string | null | undefined,
+}
+
+/** Partial preferences from onboarding (only fields we collect) */
+export type OnboardingPreferencesPayload = {
+  location?: { country?: string; province?: string }
+  household?: { size?: string; hasChildren?: boolean | null; hasPets?: boolean | null }
+  dietary?: { preferences?: string[]; allergies?: string[]; cuisines?: string[] }
+  shopping?: { frequency?: string; stores?: string[]; method?: string }
+  budget?: { monthly?: string; savingsGoal?: string }
+  profile?: { firstName?: string; lastName?: string; householdSize?: string; dietaryPreferences?: string; allergies?: string; cookingSkill?: string; budgetGoal?: string }
+  notifications?: { pushNotifications?: boolean; expiryAlerts?: boolean; listUpdates?: boolean; recipeSuggestions?: boolean; weeklyReminders?: boolean }
+  activeHouseholdId?: string | null
+}
+
+/** AsyncStorage key for stashing onboarding data when user completes onboarding before session is ready */
+export const PENDING_ONBOARDING_STORAGE_KEY = 'pending_onboarding_data_v1'
+
+/** Merge partial onboarding payload with defaults (and optionally existing prefs) into full UserPreferences */
+export function mergeOnboardingWithDefaults(
+  partial: OnboardingPreferencesPayload | null | undefined,
+  existing?: UserPreferences | null
+): UserPreferences {
+  const base = existing ? { ...DEFAULT_USER_PREFERENCES, ...existing } : { ...DEFAULT_USER_PREFERENCES }
+  if (!partial) return base
+  return {
+    ...base,
+    location: { ...base.location, ...partial.location },
+    household: { ...base.household, ...partial.household },
+    dietary: {
+      ...base.dietary,
+      ...partial.dietary,
+      allergies: partial.dietary?.allergies ?? base.dietary.allergies,
+      preferences: partial.dietary?.preferences ?? base.dietary.preferences,
+      cuisines: partial.dietary?.cuisines ?? base.dietary.cuisines,
+    },
+    shopping: { ...base.shopping, ...partial.shopping },
+    budget: { ...base.budget, ...partial.budget },
+    profile: partial.profile ?? base.profile,
+    notifications: partial.notifications ?? base.notifications,
+  }
 }
 
 class UserPreferencesService {
@@ -57,14 +116,17 @@ class UserPreferencesService {
     return UserPreferencesService.instance
   }
 
-  // Save preferences to both local storage and Supabase
+  private storageKey(userId: string): string {
+    return `user_preferences_${userId}`
+  }
+
+  // Save preferences to both local storage (per-user) and Supabase
   async savePreferences(preferences: UserPreferences, userId: string): Promise<{ error: any }> {
     try {
-      // Save to local storage for immediate access
-      await AsyncStorage.setItem('user_preferences', JSON.stringify(preferences))
+      const key = this.storageKey(userId)
+      await AsyncStorage.setItem(key, JSON.stringify(preferences))
       this.preferences = preferences
 
-      // Save to Supabase user profile
       const { error } = await supabase
         .from('users')
         .update({
@@ -77,7 +139,6 @@ class UserPreferencesService {
         return { error }
       }
 
-      // Initialize AI learning system with onboarding data
       await aiLearningService.initializeUser(userId, preferences)
 
       return { error: null }
@@ -87,18 +148,17 @@ class UserPreferencesService {
     }
   }
 
-  // Load preferences from local storage or Supabase
+  // Load preferences: per-user local key first, then Supabase
   async loadPreferences(userId?: string): Promise<UserPreferences | null> {
     try {
-      // First try local storage
-      const localPreferences = await AsyncStorage.getItem('user_preferences')
-      if (localPreferences) {
-        this.preferences = JSON.parse(localPreferences)
-        return this.preferences
-      }
-
-      // If no local preferences and we have a userId, try Supabase
       if (userId) {
+        const key = this.storageKey(userId)
+        const local = await AsyncStorage.getItem(key)
+        if (local) {
+          this.preferences = JSON.parse(local) as UserPreferences
+          return this.preferences
+        }
+
         const { data, error } = await supabase
           .from('users')
           .select('preferences')
@@ -106,11 +166,17 @@ class UserPreferencesService {
           .single()
 
         if (!error && data?.preferences) {
-          this.preferences = data.preferences
-          // Cache in local storage
-          await AsyncStorage.setItem('user_preferences', JSON.stringify(data.preferences))
+          this.preferences = data.preferences as UserPreferences
+          await AsyncStorage.setItem(key, JSON.stringify(data.preferences))
           return this.preferences
         }
+      }
+
+      // Fallback: legacy global key for backwards compat
+      const legacy = await AsyncStorage.getItem('user_preferences')
+      if (legacy) {
+        this.preferences = JSON.parse(legacy) as UserPreferences
+        return this.preferences
       }
 
       return null
@@ -125,8 +191,11 @@ class UserPreferencesService {
     return this.preferences
   }
 
-  // Clear preferences (for sign out)
-  async clearPreferences(): Promise<void> {
+  // Clear preferences (for sign out). Pass userId to clear that user's key.
+  async clearPreferences(userId?: string): Promise<void> {
+    if (userId) {
+      await AsyncStorage.removeItem(this.storageKey(userId))
+    }
     await AsyncStorage.removeItem('user_preferences')
     this.preferences = null
   }
@@ -180,7 +249,7 @@ class UserPreferencesService {
       'soya': 'soy',
       'soybean': 'soy',
       'wheat': 'wheat',
-      'gluten': 'gluten',
+      'gluten': 'wheat', // Single option is Wheat; gluten maps to wheat for detection
       'sesame': 'sesame',
       'mustard': 'mustard',
       'sulfites': 'sulfites',
@@ -230,6 +299,18 @@ class UserPreferencesService {
   // Get shopping preferences
   getShoppingPreferences(): { frequency: string; stores: string[]; method: string } | null {
     return this.preferences?.shopping || null
+  }
+
+  // Active shared pantry household (for multi-user sync)
+  getActiveHouseholdId(): string | null | undefined {
+    return this.preferences?.activeHouseholdId ?? null
+  }
+
+  async setActiveHouseholdId(userId: string, householdId: string | null): Promise<{ error: any }> {
+    const preferences = await this.loadPreferences(userId)
+    if (!preferences) return { error: new Error('Preferences not found') }
+    preferences.activeHouseholdId = householdId ?? undefined
+    return this.savePreferences(preferences, userId)
   }
 }
 

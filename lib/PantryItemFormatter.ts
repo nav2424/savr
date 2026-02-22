@@ -342,10 +342,23 @@ export function getItemEmoji(itemName: string, category?: string): string {
   if (!itemName) return '📦'
   
   const lower = itemName.toLowerCase().trim()
+  const padded = ` ${lower.replace(/\s+/g, ' ')} `
   
-  // Check for exact match or partial match in emoji map
+  // 1) Exact match first (most reliable)
+  if (ITEM_EMOJI_MAP[lower]) return ITEM_EMOJI_MAP[lower]
+
+  // 2) Whole-word / phrase match (prevents "water" -> "watermelon")
   for (const [key, emoji] of Object.entries(ITEM_EMOJI_MAP)) {
-    if (lower === key || lower.includes(key) || key.includes(lower)) {
+    if (padded.includes(` ${key} `)) {
+      return emoji
+    }
+  }
+
+  // 3) Fallback to substring match where the emoji key is contained in the name.
+  // IMPORTANT: do NOT do reverse matching (key.includes(lower)) because it causes
+  // short names to match longer keys (e.g., "water" matching "watermelon").
+  for (const [key, emoji] of Object.entries(ITEM_EMOJI_MAP)) {
+    if (lower.includes(key)) {
       return emoji
     }
   }
@@ -430,16 +443,25 @@ export function detectCategoryFromName(itemName: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .trim()
+
+  // Use space-padded matching to avoid substring false positives (e.g., "steak" containing "tea")
+  const padded = ` ${lower.replace(/\s+/g, ' ')} `
+  const hasTerm = (term: string) => padded.includes(` ${term} `)
+  const hasAnyTerm = (terms: string[]) => terms.some(hasTerm)
   
   // Produce detection
   const produceKeywords = [
     'apple', 'apples', 'banana', 'bananas', 'orange', 'oranges', 'lemon', 'lemons',
-    'lime', 'limes', 'strawberry', 'strawberries', 'cherry', 'cherries', 'grape', 'grapes',
+    'lime', 'limes', 'mandarin', 'mandarins', 'tangerine', 'tangerines', 'clementine', 'clementines',
+    'strawberry', 'strawberries', 'cherry', 'cherries', 'grape', 'grapes',
     'watermelon', 'peach', 'peaches', 'pear', 'pears', 'pineapple', 'mango', 'mangoes',
-    'avocado', 'avocados', 'kiwi', 'blueberry', 'blueberries', 'raspberry', 'raspberries', 'coconut',
+    'avocado', 'avocados', 'kiwi', 'blueberry', 'blueberries', 'raspberry', 'raspberries',
+    'blackberry', 'blackberries', 'berry', 'berries', 'coconut',
     'tomato', 'tomatoes', 'broccoli', 'carrot', 'carrots', 'corn', 'pepper', 'peppers',
     'cucumber', 'cucumbers', 'lettuce', 'salad', 'greens', 'spinach', 'potato', 'potatoes',
     'onion', 'onions', 'shallot', 'shallots', 'garlic', 'eggplant', 'mushroom', 'mushrooms', 'peas',
+    'beet', 'beets', 'celery', 'zucchini', 'squash', 'kale', 'cabbage', 'radish', 'radishes',
+    'coriander', 'coriander leaves', 'cilantro', 'dill', 'thyme', 'oregano', 'rosemary', 'sage',
     'organic', 'fresh', 'fruit', 'vegetable', 'veggie', 'produce', 'arugula', 'spring mix'
   ]
   
@@ -449,17 +471,41 @@ export function detectCategoryFromName(itemName: string): string {
     'sour cream', 'heavy cream', 'ice cream', 'dairy', 'lactose'
   ]
   
-  // Meat, poultry, seafood detection - comprehensive list
+  // Meat, poultry, seafood detection - comprehensive and STRICT list
+  // CRITICAL: This must catch ALL meat items before they fall through to Pantry Staples
   const meatKeywords = [
-    'chicken', 'beef', 'steak', 'steaks', 'ribeye', 'sirloin', 'filet', 't-bone', 'porterhouse',
-    'pork', 'bacon', 'ham', 'turkey', 'poultry', 'duck', 'lamb', 'veal',
-    'fish', 'salmon', 'tuna', 'shrimp', 'crab', 'lobster', 'meat', 'seafood',
-    'ground beef', 'ground pork', 'ground turkey', 'ground chicken',
-    'chicken breast', 'chicken thighs', 'chicken wings', 'chicken drumsticks',
-    'pork chops', 'pork tenderloin', 'pork shoulder', 'pork ribs',
-    'beef roast', 'beef brisket', 'beef ribs', 'beef tenderloin',
-    'cod', 'tilapia', 'mahi mahi', 'halibut', 'trout', 'mackerel',
-    'scallops', 'mussels', 'clams', 'oysters', 'squid', 'octopus'
+    // Core meat terms (highest priority)
+    'meat', 'seafood', 'poultry',
+    
+    // Beef cuts and variations
+    'beef', 'steak', 'steaks', 'ribeye', 'sirloin', 'filet', 't-bone', 'porterhouse',
+    'new york', 'ny strip', 'strip steak', 'strip steaks', 'boneless', 'bone-in',
+    'beef roast', 'beef brisket', 'beef ribs', 'beef tenderloin', 'beef chuck', 'beef round',
+    'ground beef', 'beef patty', 'beef patties', 'beef burger', 'beef burgers',
+    
+    // Pork cuts and variations
+    'pork', 'bacon', 'ham', 'pork chops', 'pork tenderloin', 'pork shoulder', 'pork ribs',
+    'pork loin', 'pork belly', 'ground pork', 'pork sausage', 'pork sausages',
+    
+    // Chicken and poultry
+    'chicken', 'turkey', 'duck', 'goose', 'quail', 'cornish hen',
+    'chicken breast', 'chicken thighs', 'chicken wings', 'chicken drumsticks', 'chicken legs',
+    'chicken thighs', 'chicken tenderloin', 'chicken tenders', 'ground chicken', 'ground turkey',
+    'turkey breast', 'turkey leg', 'turkey wing',
+    
+    // Other meats
+    'lamb', 'veal', 'venison', 'bison', 'buffalo',
+    'lamb chops', 'lamb leg', 'lamb shoulder', 'veal cutlet', 'veal chops',
+    
+    // Fish and seafood
+    'fish', 'salmon', 'tuna', 'cod', 'tilapia', 'mahi mahi', 'halibut', 'trout', 'mackerel',
+    'shrimp', 'prawn', 'prawns', 'crab', 'crabs', 'lobster', 'lobsters',
+    'scallops', 'mussels', 'clams', 'oysters', 'squid', 'octopus', 'calamari',
+    'anchovy', 'anchovies', 'sardine', 'sardines', 'caviar',
+    
+    // Processed meat terms
+    'sausage', 'sausages', 'hot dog', 'hot dogs', 'bratwurst', 'chorizo', 'pepperoni',
+    'deli meat', 'deli', 'cold cuts', 'lunch meat', 'prosciutto', 'salami', 'pastrami'
   ]
   
   // Grain & bread detection
@@ -468,7 +514,7 @@ export function detectCategoryFromName(itemName: string): string {
     'waffle', 'waffles', 'muffin', 'muffins', 'cake', 'pie', 'bakery',
     'rice', 'pasta', 'noodles', 'cereal', 'oatmeal', 'oats', 'quinoa', 'barley',
     'wheat', 'flour', 'grains', 'grain', 'tortilla', 'tortillas',
-    'flatbread', 'wrap', 'wraps'
+    'taco', 'tacos', 'soft taco', 'flatbread', 'wrap', 'wraps'
   ]
   
   // Plant-based detection
@@ -484,6 +530,21 @@ export function detectCategoryFromName(itemName: string): string {
   const beverageKeywords = [
     'coffee', 'tea', 'water', 'juice', 'soda', 'pop', 'beer', 'wine',
     'cocktail', 'drink', 'beverage', 'smoothie'
+  ]
+
+  // Strong beverage phrases that should override fruit/produce words (e.g. "orange sports drink")
+  const beverageStrongKeywords = [
+    'sports drink',
+    'energy drink',
+    'soft drink',
+    'sparkling water',
+    'seltzer',
+    'iced tea',
+    'lemonade',
+    'orange juice',
+    'apple juice',
+    'cranberry juice',
+    'grape juice',
   ]
   
   // Frozen detection - check for frozen foods, pizzas, frozen meals
@@ -535,9 +596,29 @@ export function detectCategoryFromName(itemName: string): string {
     'napkin', 'towel', 'foil', 'filter', 'candle', 'bag', 'disposable',
     'container', 'baguette bag', 'foil sheet'
   ]
+
+  // Baby & personal care - NOT pantry/food (check before pantry staples)
+  const babyAndPersonalCareKeywords = [
+    'diaper', 'diapers', 'pull-up', 'pull-ups', 'pullup', 'pullups',
+    'baby wipe', 'baby wipes', 'wipes', 'training pant', 'training pants',
+    'shampoo', 'conditioner', 'toothpaste', 'mouthwash', 'deodorant',
+    'body wash', 'hand soap', 'bar soap', 'razor', 'razors', 'shave gel',
+    'floss', 'lotion', 'sunscreen', 'facial', 'cleanser', 'serum',
+    'cerave', 'dove ', 'degree ', 'downy ', 'crest ', 'colgate ',
+    'tampon', 'pad', 'pads', 'feminine', 'cotton ball', 'q-tip', 'qtip'
+  ]
   
   // Check for matches - prioritize specific categories first
   // IMPORTANT: Order matters! Check frozen and grains BEFORE produce to avoid false matches
+
+  // Brand/product overrides (before meat so "ham" in "Arm & Hammer" doesn't match)
+  const normalizedForBrand = lower.replace(/\s*&\s*/g, ' ').replace(/\s+/g, ' ')
+  if (normalizedForBrand.includes('arm') && normalizedForBrand.includes('hammer')) {
+    return 'Pantry Staples & Essentials' // Arm & Hammer = baking soda / household
+  }
+  if (lower.includes('chobani')) {
+    return 'Dairy & Eggs' // Chobani = yogurt brand
+  }
   
   // Frozen foods - check FIRST (highest priority)
   // This catches "pizza with peppers" as frozen, not produce
@@ -551,18 +632,80 @@ export function detectCategoryFromName(itemName: string): string {
     return 'Grains, Bread & Pasta'
   }
   
-  // Meat, poultry, seafood - check THIRD
-  // Check for exact matches first, then partial matches
+  // Meat, poultry, seafood - check THIRD (CRITICAL: Must be strict and comprehensive)
+  // Use word boundary matching to avoid false positives
   for (const keyword of meatKeywords) {
-    if (lower === keyword || lower.startsWith(keyword + ' ') || lower.endsWith(' ' + keyword) || lower.includes(' ' + keyword + ' ')) {
+    // Exact match
+    if (lower === keyword) {
+      return 'Meat, Poultry & Seafood'
+    }
+    // Starts with keyword (e.g., "beef roast", "chicken breast", "boneless chicken")
+    if (lower.startsWith(keyword + ' ')) {
+      return 'Meat, Poultry & Seafood'
+    }
+    // Ends with keyword (e.g., "ground beef", "new york strip")
+    if (lower.endsWith(' ' + keyword)) {
+      return 'Meat, Poultry & Seafood'
+    }
+    // Contains keyword as whole word (e.g., "boneless meat", "new york strip thin")
+    if (lower.includes(' ' + keyword + ' ')) {
+      return 'Meat, Poultry & Seafood'
+    }
+    // Special case: "boneless" or "strip" at start followed by meat term
+    if ((keyword === 'boneless' || keyword === 'strip') && 
+        meatKeywords.some(k => k !== keyword && lower.includes(k))) {
       return 'Meat, Poultry & Seafood'
     }
   }
-  // Also check if item name contains any meat keyword
-  if (meatKeywords.some(keyword => lower.includes(keyword))) {
+  
+  // Additional strict checks for common meat patterns
+  // "boneless [meat type]" pattern
+  if (lower.startsWith('boneless ') && meatKeywords.some(k => lower.includes(k) && k !== 'boneless')) {
+    return 'Meat, Poultry & Seafood'
+  }
+  // "new york strip" pattern
+  if (lower.includes('new york') && (lower.includes('strip') || lower.includes('steak'))) {
+    return 'Meat, Poultry & Seafood'
+  }
+  // "strip" followed by meat indicators
+  if (lower.includes('strip') && (lower.includes('steak') || lower.includes('beef') || lower.includes('meat'))) {
     return 'Meat, Poultry & Seafood'
   }
   
+  // Final fallback: check if item name contains any meat keyword (but be more strict)
+  // Only match if keyword appears as a significant part of the name
+  for (const keyword of meatKeywords) {
+    if (lower.includes(keyword)) {
+      // Ensure it's not part of a non-meat word (e.g., "meatball" is OK, but "sweetmeat" should be checked)
+      const keywordIndex = lower.indexOf(keyword)
+      // Check if it's at the start, end, or surrounded by spaces (whole word)
+      if (keywordIndex === 0 || 
+          lower[keywordIndex - 1] === ' ' || 
+          keywordIndex + keyword.length === lower.length ||
+          lower[keywordIndex + keyword.length] === ' ') {
+        return 'Meat, Poultry & Seafood'
+      }
+    }
+  }
+
+  // Beverages - check BEFORE Produce so we classify by the full item name.
+  // Example: "Orange Sports Drink" should be Beverages, not Produce.
+  // Use "strong" phrases first, then fallback to standalone beverage keywords.
+  if (hasAnyTerm(beverageStrongKeywords)) {
+    return 'Beverages'
+  }
+  // Avoid classifying pantry items like "drink mix" as beverages
+  if ((hasTerm('drink') || hasTerm('beverage')) && (hasTerm('mix') || hasTerm('powder'))) {
+    // fall through (likely pantry staples)
+  } else if (hasAnyTerm(['coffee', 'tea', 'water', 'juice', 'soda', 'pop', 'beer', 'wine', 'cocktail', 'smoothie']) || hasTerm('drink') || hasTerm('beverage')) {
+    return 'Beverages'
+  }
+  
+  // Coriander seeds / ground coriander = Pantry (spice), not Produce (fresh herb)
+  if (hasAnyTerm(['coriander seeds', 'coriander seed', 'ground coriander'])) {
+    return 'Pantry Staples & Essentials'
+  }
+
   // Produce - check FOURTH (after frozen/grains to avoid false matches)
   // Only match if the item IS produce, not just contains produce as an ingredient
   // Use stricter matching to avoid "pizza with peppers" being classified as produce
@@ -589,6 +732,20 @@ export function detectCategoryFromName(itemName: string): string {
   const strictProduceKeywords = ['organic', 'fresh', 'fruit', 'vegetable', 'veggie', 'produce', 'arugula', 'spring mix']
   if (strictProduceKeywords.some(keyword => lower.includes(keyword) && (lower.startsWith(keyword) || lower.indexOf(keyword) < 15))) {
     return 'Produce'
+  }
+  
+  // Baby & personal care - BEFORE dairy (so "Cerave Cream" is Non-Food, not Dairy)
+  if (babyAndPersonalCareKeywords.some(keyword => {
+    const k = keyword.trim()
+    return lower.includes(k) && (
+      lower.startsWith(k) ||
+      lower.endsWith(k) ||
+      lower.includes(' ' + k + ' ') ||
+      lower.includes(' ' + k) ||
+      lower.includes(k + ' ')
+    )
+  })) {
+    return 'Non-Food / Misc'
   }
   
   // Dairy - check FIFTH

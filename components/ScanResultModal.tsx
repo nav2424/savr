@@ -1,38 +1,60 @@
 // SAVR Scan Result Modal - Shows scanned product and adds to pantry
 import React, { useState, useEffect, useRef } from 'react'
-import { View, Text, TextInput, StyleSheet, Pressable, Modal, ScrollView, Platform, ActivityIndicator, KeyboardAvoidingView } from 'react-native'
+import { View, Text, TextInput, StyleSheet, Pressable, Modal, ScrollView, Platform, ActivityIndicator, KeyboardAvoidingView, Dimensions } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { BlurView } from 'expo-blur'
 import { Image } from 'expo-image'
 import * as Haptics from 'expo-haptics'
 import { Ionicons } from '@expo/vector-icons'
+import { useRouter } from 'expo-router'
+import { useAuth } from '../lib/AuthContext'
 import { ScannedProduct, AllergenCheckResult } from '../lib/BarcodeService'
+import { reportIncorrectAllergenResult } from '../lib/AllergenReportService'
 import { usePantry } from '../lib/PantryContext'
 import { formatPantryItem } from '../lib/PantryItemFormatter'
-import { capitalizeCategoryName, scanningService } from '../lib/ScanningService'
+import { capitalizeCategoryName } from '../lib/ScanningService'
 import { expiryPredictionService } from '../lib/ExpiryPredictionService'
-import * as ImagePicker from 'expo-image-picker'
-import { Alert } from 'react-native'
+import { useListsUnified } from '../lib/useListsUnified'
+import { useToast } from '../lib/ToastContext'
+import { SafeAreaView } from 'react-native-safe-area-context'
+import { getSectionLabel } from '../lib/allergenEngine/sectionLabels'
+import AllergenDisclaimer from './AllergenDisclaimer'
 
 interface ScanResultModalProps {
   visible: boolean
   product: ScannedProduct | null
   allergenCheck?: AllergenCheckResult | null
+  scanSessionId?: string
+  barcode?: string
   onClose: () => void
   onAddAnother: () => void
 }
 
-export default function ScanResultModal({ visible, product, allergenCheck, onClose, onAddAnother }: ScanResultModalProps) {
+export default function ScanResultModal({ visible, product, allergenCheck, scanSessionId, barcode, onClose, onAddAnother }: ScanResultModalProps) {
   const { addItem, refreshItems } = usePantry()
+  const listsUnified = useListsUnified()
+  const lists = Array.isArray(listsUnified.lists) ? listsUnified.lists : []
+  const listsLoading = listsUnified.loading === true
+  const listsLoadError = listsUnified.listsLoadError ?? null
+  const { addItemToList, refreshLists } = listsUnified
+  const { showToast } = useToast()
+  const { user } = useAuth()
+  const router = useRouter()
+  const [listsRefreshing, setListsRefreshing] = useState(false)
   const [quantity, setQuantity] = useState(1)
   const [quantityText, setQuantityText] = useState('1')
   const [adding, setAdding] = useState(false)
+  const [addingToList, setAddingToList] = useState(false)
+  const [showListSelection, setShowListSelection] = useState(false)
   const [showAllergenDetail, setShowAllergenDetail] = useState(false)
-  const [scannedExpiryDate, setScannedExpiryDate] = useState<string | null>(null)
-  const [scanningExpiry, setScanningExpiry] = useState(false)
+  const [reportingIncorrect, setReportingIncorrect] = useState(false)
+  // Expiry date scanning removed for barcode scans per user request
+  // const [scannedExpiryDate, setScannedExpiryDate] = useState<string | null>(null)
+  // const [scanningExpiry, setScanningExpiry] = useState(false)
   const scrollViewRef = useRef<ScrollView>(null)
   const quantityInputRef = useRef<TextInput>(null)
   const quantitySectionRef = useRef<View>(null)
+  const listModalOpenedAtRef = useRef<number>(0)
 
   // Reset allergen detail when modal closes
   useEffect(() => {
@@ -40,35 +62,130 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
       setShowAllergenDetail(false)
       setQuantity(1)
       setQuantityText('1')
+      setShowListSelection(false)
     }
   }, [visible])
 
+  const handleAddToGroceryList = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+    listModalOpenedAtRef.current = Date.now()
+    setShowListSelection(true)
+    setListsRefreshing(true)
+    try {
+      if (typeof refreshLists === 'function') {
+        await refreshLists()
+      }
+    } catch (e) {
+      console.warn('Refresh lists failed', e)
+    } finally {
+      setListsRefreshing(false)
+    }
+  }
+
+  const handleCloseListModal = () => {
+    const now = Date.now()
+    const elapsed = now - listModalOpenedAtRef.current
+    if (elapsed < 400) return
+    setShowListSelection(false)
+  }
+
+  const closeListModalImmediate = () => setShowListSelection(false)
+
+  const handleSelectList = async (listId: string) => {
+    setAddingToList(true)
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+
+    try {
+      await addItemToList(listId, {
+        name: product.name,
+        category: product.category,
+        quantity: quantity.toString(),
+        notes: product.brand ? `Brand: ${product.brand}` : undefined,
+      })
+
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+      const listName = lists.find(l => l.id === listId)?.name || 'list'
+      const message = quantity > 1
+        ? `Added ${quantity} to ${listName}`
+        : `Added to ${listName}`
+      showToast(message, { kind: 'success' })
+      setShowListSelection(false)
+      setAddingToList(false)
+    } catch (error) {
+      console.error('Error adding to list:', error)
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+      showToast('Failed to add item to list. Please try again.', { kind: 'error' })
+      setAddingToList(false)
+    }
+  }
+
   if (!product) return null
+
+  const riskLevel =
+    allergenCheck?.riskLevel ||
+    (allergenCheck?.hasAllergens ? 'HIGH_RISK' : 'NO_MATCH_FOUND')
+  const matchedTerms = allergenCheck?.matches?.length
+    ? Array.from(new Set(allergenCheck.matches.map(match => match.matchedTerm)))
+    : []
+  const headerColor =
+    riskLevel === 'HIGH_RISK'
+      ? '#DC2626'
+      : riskLevel === 'NO_MATCH_FOUND'
+        ? '#059669'
+        : '#D97706'
+  const headerBg =
+    riskLevel === 'HIGH_RISK'
+      ? 'rgba(220, 38, 38, 0.1)'
+      : riskLevel === 'NO_MATCH_FOUND'
+        ? 'rgba(5, 150, 105, 0.1)'
+        : 'rgba(245, 158, 11, 0.15)'
+  // UNKNOWN/INSUFFICIENT_DATA: never show safe-like copy
+  const overlayTitle = (() => {
+    switch (riskLevel) {
+      case 'HIGH_RISK':
+        return 'Allergens Detected'
+      case 'POSSIBLE_RISK':
+        return 'Uncertain — Possible Risk'
+      case 'INSUFFICIENT_DATA':
+        return 'Ingredients Unavailable'
+      case 'NO_MATCH_FOUND':
+      default:
+        return 'No Allergens Found'
+    }
+  })()
+
+  const unknownBannerMessage =
+    riskLevel === 'INSUFFICIENT_DATA'
+      ? "Ingredients unavailable — can't verify allergens for this barcode."
+      : null
+  const unknownDataIncomplete =
+    riskLevel === 'INSUFFICIENT_DATA' &&
+    allergenCheck?.sourceCoverageScore != null &&
+    allergenCheck.sourceCoverageScore < 60
 
   const handleAddToPantry = async () => {
     setAdding(true)
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
 
     try {
-      // Determine expiry date - prioritize scanned > barcode > predicted
-      let expiryDate = scannedExpiryDate || product.expiryDate
-      let expirySource = scannedExpiryDate ? 'scanned' : (product.expiryDate ? 'barcode' : 'predicted')
+      // Determine expiry date - use AI prediction only
+      // NOTE: Expiry dates from barcode products and manual scanning are NOT used (removed per user request)
+      let expiryDate: string | undefined = undefined
+      let expirySource = 'predicted'
 
-      if (!expiryDate) {
-        // Predict expiry date using ExpiryPredictionService
-        const purchaseDate = new Date().toISOString().split('T')[0]
-        const prediction = expiryPredictionService.predictExpiry(
-          product.name,
-          product.category,
-          'fridge', // Default to fridge storage
-          purchaseDate
-        )
-        
-        if (prediction.confidence !== 'low') {
-          expiryDate = prediction.expiryDate
-          expirySource = 'predicted'
-          console.log(`📅 Predicted expiry for ${product.name}: ${prediction.days} days (${prediction.confidence} confidence)`)
-        }
+      // Predict expiry date using ExpiryPredictionService
+      const purchaseDate = new Date().toISOString().split('T')[0]
+      const prediction = expiryPredictionService.predictExpiry(
+        product.name,
+        product.category,
+        'fridge', // Default to fridge storage
+        purchaseDate
+      )
+      
+      if (prediction.confidence !== 'low') {
+        expiryDate = prediction.expiryDate
+        expirySource = 'predicted'
+        console.log(`📅 Predicted expiry for ${product.name}: ${prediction.days} days (${prediction.confidence} confidence)`)
       }
 
       // Use unified formatter for consistent item formatting
@@ -85,8 +202,8 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
 
       await addItem(formattedItem)
 
-      // Refresh pantry to immediately show the new item
-      await refreshItems()
+      // No need to refresh - real-time subscription will update UI instantly
+      // refreshItems() is redundant and causes unnecessary network requests
 
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
       
@@ -95,7 +212,6 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
         setAdding(false)
         setQuantity(1)
         setQuantityText('1')
-        setScannedExpiryDate(null)
         onClose()
       }, 500)
     } catch (error) {
@@ -112,55 +228,8 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
     onAddAnother()
   }
 
-  const handleScanExpiryDate = async () => {
-    try {
-      // Request camera permissions
-      const { status } = await ImagePicker.requestCameraPermissionsAsync()
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Camera permission is needed to scan expiry dates.')
-        return
-      }
-
-      // Launch camera
-      const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: false,
-        quality: 0.8,
-        base64: true,
-      })
-
-      if (result.canceled || !result.assets[0]) {
-        return
-      }
-
-      setScanningExpiry(true)
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
-
-      // Convert image to base64
-      const base64 = result.assets[0].base64 || ''
-      if (!base64) {
-        throw new Error('Failed to process image')
-      }
-
-      // Scan expiry date
-      const scanResult = await scanningService.scanExpiryDate(base64)
-
-      if (scanResult.expiryDate) {
-        setScannedExpiryDate(scanResult.expiryDate)
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-        Alert.alert('Success', `Expiry date scanned: ${new Date(scanResult.expiryDate).toLocaleDateString()}`)
-      } else {
-        await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
-        Alert.alert('Not Found', scanResult.error || 'Could not find an expiry date in the image. Please try again or enter manually.')
-      }
-    } catch (error) {
-      console.error('Error scanning expiry date:', error)
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
-      Alert.alert('Error', 'Failed to scan expiry date. Please try again.')
-    } finally {
-      setScanningExpiry(false)
-    }
-  }
+  // Expiry date scanning removed for barcode scans per user request
+  // const handleScanExpiryDate = async () => { ... }
 
   return (
     <>
@@ -212,30 +281,36 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
                 }}
                 onPress={(e) => e.stopPropagation()}
               >
+                <ScrollView
+                  style={{ maxHeight: Dimensions.get('window').height * 0.72 }}
+                  contentContainerStyle={{ paddingBottom: 16 }}
+                  showsVerticalScrollIndicator={true}
+                  bounces={true}
+                >
                 {/* Header */}
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}>
                   <View style={{ 
                     width: 40, 
                     height: 40, 
                     borderRadius: 20, 
-                    backgroundColor: allergenCheck.hasAllergens ? 'rgba(220, 38, 38, 0.1)' : 'rgba(5, 150, 105, 0.1)',
+                    backgroundColor: headerBg,
                     justifyContent: 'center',
                     alignItems: 'center',
                     marginRight: 12
                   }}>
                     <Ionicons 
-                      name={allergenCheck.hasAllergens ? "warning" : "checkmark-circle"} 
+                      name={riskLevel === 'HIGH_RISK' ? "warning" : riskLevel === 'NO_MATCH_FOUND' ? "checkmark-circle" : "alert-circle"} 
                       size={24} 
-                      color={allergenCheck.hasAllergens ? "#DC2626" : "#059669"} 
+                      color={headerColor} 
                     />
                   </View>
                   <Text style={{
                     fontSize: 20,
                     fontWeight: '700',
-                    color: allergenCheck.hasAllergens ? "#DC2626" : "#059669",
+                    color: headerColor,
                     flex: 1
                   }}>
-                    {allergenCheck.hasAllergens ? "Allergens Detected" : "Safe to Eat"}
+                    {overlayTitle}
                   </Text>
                 </View>
 
@@ -248,30 +323,135 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
                   textAlign: 'center'
                 }}>{product?.name || 'Unknown Product'}</Text>
 
-                {/* Detected Allergens */}
-                {allergenCheck.hasAllergens && (
+                {/* Source: where ingredients/allergen evidence came from */}
+                {allergenCheck.sourceLabel && (
+                  <Text style={{ fontSize: 12, color: '#6B7280', marginBottom: 8, textAlign: 'center' }}>
+                    Source: {allergenCheck.sourceLabel}
+                  </Text>
+                )}
+
+                {/* Status Message - UNKNOWN: never show safe-like copy */}
+                <Text style={{
+                  fontSize: 14,
+                  color: riskLevel === 'INSUFFICIENT_DATA' ? '#92400E' : '#4B5563',
+                  marginBottom: 16,
+                  textAlign: 'center',
+                  lineHeight: 20
+                }}>
+                  {riskLevel === 'INSUFFICIENT_DATA'
+                    ? (unknownBannerMessage ?? allergenCheck.message)
+                    : (allergenCheck.message || 'Allergen status unavailable.')}
+                </Text>
+                {riskLevel === 'INSUFFICIENT_DATA' && unknownDataIncomplete && (
+                  <Text style={{ fontSize: 13, color: '#B45309', textAlign: 'center', marginBottom: 16 }}>
+                    OFF data incomplete for this product.
+                  </Text>
+                )}
+
+                {/* UNKNOWN: brief disclaimer near top */}
+                {riskLevel === 'INSUFFICIENT_DATA' && (
+                  <View style={{ marginBottom: 16 }}>
+                    <AllergenDisclaimer variant="unknown" compact />
+                  </View>
+                )}
+
+                {/* Detected Ingredients / Terms — Evidence-based (match_text + section) */}
+                {(riskLevel === 'HIGH_RISK' || riskLevel === 'POSSIBLE_RISK') && (
                   <View style={{ marginBottom: 24 }}>
                     <Text style={{
                       fontSize: 16,
                       fontWeight: '600',
                       color: '#374151',
                       marginBottom: 12
-                    }}>Detected Allergens:</Text>
+                    }}>
+                      {riskLevel === 'HIGH_RISK' ? 'Evidence — ingredients flagged:' : 'Evidence — possible traces:'}
+                    </Text>
                     <View style={{ gap: 8 }}>
-                      {allergenCheck.detectedAllergens.map((allergen, index) => (
-                        <View key={index} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                          <Ionicons name="close-circle" size={16} color="#DC2626" />
-                          <Text style={{ fontSize: 14, color: '#DC2626', fontWeight: '500' }}>{allergen}</Text>
-                        </View>
-                      ))}
+                      {allergenCheck.matches && allergenCheck.matches.length > 0 ? (
+                        allergenCheck.matches.map((match, index) => {
+                          const sectionLabel = getSectionLabel(match.source, { bilingual: true })
+                          return (
+                            <View key={index} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                              <Ionicons name="close-circle" size={16} color={headerColor} />
+                              <Text style={{ fontSize: 14, color: headerColor, fontWeight: '500' }}>{match.allergen}</Text>
+                              <Text style={{ fontSize: 12, color: '#6B7280' }}>— "{match.matchedTerm}" ({sectionLabel})</Text>
+                            </View>
+                          )
+                        })
+                      ) : (
+                        (allergenCheck.detectedAllergens?.length ? allergenCheck.detectedAllergens : matchedTerms).map((term, index) => (
+                          <View key={index} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                            <Ionicons name="close-circle" size={16} color={headerColor} />
+                            <Text style={{ fontSize: 14, color: headerColor, fontWeight: '500' }}>{term}</Text>
+                          </View>
+                        ))
+                      )}
                     </View>
+                    {riskLevel === 'POSSIBLE_RISK' && (
+                      <View style={{ marginTop: 12 }}>
+                        <AllergenDisclaimer variant="may_contain" compact />
+                      </View>
+                    )}
+                  </View>
+                )}
+
+                {/* Report incorrect result — CONTAINS / MAY_CONTAIN only (not for Ingredients Unavailable) */}
+                {(riskLevel === 'HIGH_RISK' || riskLevel === 'POSSIBLE_RISK') && user && (
+                  <Pressable
+                    style={{ marginBottom: 16, paddingVertical: 10, paddingHorizontal: 16, backgroundColor: 'rgba(0,0,0,0.06)', borderRadius: 10, alignItems: 'center' }}
+                    onPress={async () => {
+                      if (reportingIncorrect || !barcode) return
+                      setReportingIncorrect(true)
+                      try {
+                        const overallStatus = riskLevel === 'HIGH_RISK' ? 'CONTAINS' : riskLevel === 'POSSIBLE_RISK' ? 'MAY_CONTAIN' : 'UNKNOWN'
+                        await reportIncorrectAllergenResult({
+                          userId: user.id,
+                          scanSessionId,
+                          barcode: barcode ?? '',
+                          overallStatus,
+                          matchedAllergens: (allergenCheck.matches ?? []).map(m => ({
+                            allergen_id: m.allergenId ?? m.allergen,
+                            match_text: m.matchedTerm,
+                            section: m.source === 'allergens' ? 'contains' : m.source === 'traces' ? 'may_contain' : 'ingredients',
+                          })),
+                          enabledAllergenIds: allergenCheck.userAllergens ?? [],
+                          offProductName: product?.name,
+                          offBrands: product?.brand,
+                          ingredientsText: allergenCheck.scannedText?.ingredientsText,
+                          containsText: allergenCheck.scannedText?.allergensText,
+                          mayContainText: allergenCheck.scannedText?.tracesText,
+                        })
+                        showToast('Report submitted. Thank you.', { kind: 'success' })
+                      } catch (_e) {
+                        showToast('Could not submit report.', { kind: 'error' })
+                      } finally {
+                        setReportingIncorrect(false)
+                      }
+                    }}
+                    disabled={reportingIncorrect}
+                  >
+                    <Text style={{ fontSize: 14, color: '#6B7280', fontWeight: '500' }}>
+                      {reportingIncorrect ? 'Submitting…' : 'Report incorrect result'}
+                    </Text>
+                  </Pressable>
+                )}
+
+                {/* Safety disclaimer — only for HIGH_RISK and POSSIBLE_RISK (Ingredients Unavailable shows only the UNKNOWN disclaimer above) */}
+                {(riskLevel === 'HIGH_RISK' || riskLevel === 'POSSIBLE_RISK') && (
+                  <View style={{ marginBottom: 16 }}>
+                    <AllergenDisclaimer variant="default" compact />
                   </View>
                 )}
 
                 {/* Action Button */}
                 <Pressable
                   style={{
-                    backgroundColor: allergenCheck.hasAllergens ? '#DC2626' : '#059669',
+                    backgroundColor:
+                      riskLevel === 'HIGH_RISK'
+                        ? '#DC2626'
+                        : riskLevel === 'NO_MATCH_FOUND'
+                          ? '#059669'
+                          : '#D97706',
                     paddingVertical: 12,
                     paddingHorizontal: 24,
                     borderRadius: 12,
@@ -281,6 +461,7 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
                 >
                   <Text style={{ color: 'white', fontSize: 16, fontWeight: '600' }}>Got it</Text>
                 </Pressable>
+                </ScrollView>
               </Pressable>
             </Pressable>
               )
@@ -350,41 +531,8 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
               </View>
               
               {/* Expiry Information */}
-              <View style={styles.expirySection}>
-                {(scannedExpiryDate || product.expiryDate || product.shelfLife) && (
-                  <View style={styles.expiryInfo}>
-                    <Ionicons name="time-outline" size={16} color="#8E8E93" />
-                    <Text style={styles.expiryText}>
-                      {scannedExpiryDate
-                        ? `Expires: ${new Date(scannedExpiryDate).toLocaleDateString()} (scanned)`
-                        : product.expiryDate 
-                          ? `Expires: ${new Date(product.expiryDate).toLocaleDateString()}`
-                          : product.shelfLife 
-                            ? `Shelf life: ${product.shelfLife} days`
-                            : ''
-                      }
-                    </Text>
-                  </View>
-                )}
-                
-                {/* Scan Expiry Date Button */}
-                <Pressable
-                  style={styles.scanExpiryButton}
-                  onPress={handleScanExpiryDate}
-                  disabled={scanningExpiry}
-                >
-                  {scanningExpiry ? (
-                    <ActivityIndicator size="small" color="#6A9571" />
-                  ) : (
-                    <>
-                      <Ionicons name="camera-outline" size={18} color="#6A9571" />
-                      <Text style={styles.scanExpiryText}>
-                        {scannedExpiryDate ? 'Rescan Expiry Date' : 'Scan Expiry Date'}
-                      </Text>
-                    </>
-                  )}
-                </Pressable>
-              </View>
+              {/* NOTE: Expiry date scanning removed for barcode scans per user request */}
+              {/* Expiry dates will be predicted automatically when adding to pantry */}
               
               {/* Storage Instructions */}
               {product.storageInstructions && (
@@ -394,6 +542,15 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
                 </View>
               )}
             </View>
+
+            {/* Source: where ingredients/allergen evidence came from */}
+            {allergenCheck && (
+              <View style={styles.sourceLabelRow}>
+                <Text style={styles.sourceLabelText}>
+                  Source: {allergenCheck.sourceLabel ?? 'Open Food Facts'}
+                </Text>
+              </View>
+            )}
 
             {/* Allergy Status Button (Glassmorphism) - Bulletproof with risk levels */}
             {allergenCheck && allergenCheck.userAllergens.length > 0 && (
@@ -451,9 +608,8 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
                               case 'HIGH_RISK':
                                 return 'Allergies Detected'
                               case 'POSSIBLE_RISK':
-                                return 'Possible Risk'
                               case 'INSUFFICIENT_DATA':
-                                return 'Unable to Verify'
+                                return 'Uncertain'
                               case 'NO_MATCH_FOUND':
                               default:
                                 return 'All Good'
@@ -461,9 +617,11 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
                           })()}
                         </Text>
                         <Text style={styles.allergySubtext}>
-                          {allergenCheck.message || (allergenCheck.hasAllergens 
-                            ? `${allergenCheck.detectedAllergens.length} allergen${allergenCheck.detectedAllergens.length > 1 ? 's' : ''} found`
-                            : 'Safe for your household')}
+                          {riskLevel === 'INSUFFICIENT_DATA'
+                            ? "Can't verify — ingredients missing"
+                            : (allergenCheck.message || (allergenCheck.hasAllergens
+                              ? `${allergenCheck.detectedAllergens.length} allergen${allergenCheck.detectedAllergens.length > 1 ? 's' : ''} found`
+                              : 'Safe for your household'))}
                         </Text>
                       </View>
                       <Ionicons name="chevron-forward" size={20} color="rgba(255, 255, 255, 0.8)" />
@@ -541,6 +699,13 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
               </View>
             </View>
 
+            {/* Safety disclaimer — above CTAs when allergen info present */}
+            {allergenCheck && (
+              <View style={{ marginBottom: 16 }}>
+                <AllergenDisclaimer variant="default" />
+              </View>
+            )}
+
             {/* Action Buttons */}
             <View style={styles.actionButtons}>
               <Pressable
@@ -566,6 +731,28 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
               </Pressable>
 
               <Pressable
+                style={styles.addToListButton}
+                onPress={handleAddToGroceryList}
+                disabled={addingToList}
+              >
+                <LinearGradient
+                  colors={['#6A9571', '#5A8461']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.addToListGradient}
+                >
+                  {addingToList ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Ionicons name="list-outline" size={20} color="#FFFFFF" />
+                      <Text style={styles.addToListText}>Add to List</Text>
+                    </>
+                  )}
+                </LinearGradient>
+              </Pressable>
+
+              <Pressable
                 style={styles.scanAnotherButton}
                 onPress={handleAddAnotherScan}
               >
@@ -585,6 +772,105 @@ export default function ScanResultModal({ visible, product, allergenCheck, onClo
           </ScrollView>
           </KeyboardAvoidingView>
           </LinearGradient>
+
+          {/* List selection overlay - inside same modal so it appears in front */}
+          {showListSelection && (
+            <View style={styles.listOverlay} pointerEvents="box-none">
+              <Pressable style={StyleSheet.absoluteFill} onPress={handleCloseListModal} />
+              <SafeAreaView style={styles.listSheet} edges={['top', 'bottom']}>
+                <View style={styles.listModalTopSpacer} />
+                <View style={styles.listModalHeader}>
+                  <Text style={styles.listModalTitle}>Select a List</Text>
+                  <Pressable style={styles.listModalCloseButton} onPress={closeListModalImmediate}>
+                    <Ionicons name="close" size={24} color="#1C1C1E" />
+                  </Pressable>
+                </View>
+                <ScrollView style={styles.listModalScrollView} contentContainerStyle={styles.listModalScrollContent}>
+                  {(listsRefreshing || listsLoading) ? (
+                    <View style={styles.emptyListsContainer}>
+                      <ActivityIndicator size="large" color="#6A9571" />
+                      <Text style={styles.emptyListsSubtext}>Loading your lists…</Text>
+                    </View>
+                  ) : listsLoadError ? (
+                    <View style={styles.emptyListsContainer}>
+                      <Ionicons name="cloud-offline-outline" size={48} color="#8E8E93" />
+                      <Text style={styles.emptyListsText}>Couldn&apos;t load lists</Text>
+                      <Text style={styles.emptyListsSubtext}>Check your connection and try again</Text>
+                      <Pressable
+                        style={styles.createListButton}
+                        onPress={async () => {
+                          setListsRefreshing(true)
+                          try {
+                            if (typeof refreshLists === 'function') await refreshLists()
+                          } finally {
+                            setListsRefreshing(false)
+                          }
+                        }}
+                        disabled={listsRefreshing}
+                      >
+                        <Text style={styles.createListButtonText}>Retry</Text>
+                      </Pressable>
+                    </View>
+                  ) : lists.length === 0 ? (
+                    <View style={styles.emptyListsContainer}>
+                      <Ionicons name="list-outline" size={48} color="#8E8E93" />
+                      <Text style={styles.emptyListsText}>No grocery lists found</Text>
+                      <Text style={styles.emptyListsSubtext}>Create a list first or retry if you have lists</Text>
+                      <View style={styles.emptyListsActions}>
+                        {typeof refreshLists === 'function' && (
+                          <Pressable
+                            style={[styles.createListButton, styles.retryListButton]}
+                            onPress={async () => {
+                              setListsRefreshing(true)
+                              try {
+                                await refreshLists()
+                              } finally {
+                                setListsRefreshing(false)
+                              }
+                            }}
+                            disabled={listsRefreshing}
+                          >
+                            <Text style={styles.createListButtonText}>Retry</Text>
+                          </Pressable>
+                        )}
+                        <Pressable
+                          style={styles.createListButton}
+                          onPress={() => {
+                            setShowListSelection(false)
+                            onClose()
+                            setTimeout(() => router.push('/(tabs)/lists?openNewList=true'), 300)
+                          }}
+                        >
+                          <Text style={styles.createListButtonText}>Create a List</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ) : (
+                    lists.map((list) => (
+                      <Pressable
+                        key={list.id}
+                        style={styles.listItem}
+                        onPress={() => handleSelectList(list.id)}
+                        disabled={addingToList}
+                      >
+                        <View style={styles.listItemContent}>
+                          <Text style={styles.listItemIcon}>{list.icon || '🛒'}</Text>
+                        <View style={styles.listItemInfo}>
+                          <Text style={styles.listItemName}>{list.name}</Text>
+                          <Text style={styles.listItemMeta}>
+                            {list.itemCount} {list.itemCount === 1 ? 'item' : 'items'}
+                            {list.completedCount > 0 && ` • ${list.completedCount} completed`}
+                          </Text>
+                        </View>
+                        </View>
+                        <Ionicons name="chevron-forward" size={20} color="#8E8E93" />
+                      </Pressable>
+                    ))
+                  )}
+                </ScrollView>
+              </SafeAreaView>
+            </View>
+          )}
         </View>
       </Modal>
     </>
@@ -853,6 +1139,22 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
   },
+  addToListButton: {
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  addToListGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
+    gap: 8,
+  },
+  addToListText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
   scanAnotherButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -866,6 +1168,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#6A9571',
+  },
+  sourceLabelRow: {
+    marginBottom: 12,
+    paddingHorizontal: 0,
+  },
+  sourceLabelText: {
+    fontSize: 13,
+    color: '#6B7280',
+    fontWeight: '500',
   },
   sourceIndicator: {
     alignItems: 'center',
@@ -1111,6 +1422,153 @@ const styles = StyleSheet.create({
     color: '#2D5F3E',
     lineHeight: 22,
     fontWeight: '500',
+  },
+  // List selection overlay - full screen for easy use
+  listOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    zIndex: 99999,
+    ...Platform.select({
+      android: { elevation: 99999 },
+    }),
+  },
+  listSheet: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 0,
+    marginVertical: 0,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.15,
+        shadowRadius: 12,
+      },
+      android: { elevation: 24 },
+    }),
+  },
+  listModalContent: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 1001,
+      },
+    }),
+  },
+  listModalTopSpacer: {
+    height: 24,
+    backgroundColor: '#FFFFFF',
+  },
+  listModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 24,
+    paddingBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0, 0, 0, 0.06)',
+  },
+  listModalTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1C1C1E',
+  },
+  listModalCloseButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  listModalScrollView: {
+    flex: 1,
+  },
+  listModalScrollContent: {
+    flexGrow: 1,
+    paddingTop: 16,
+    paddingBottom: 32,
+  },
+  emptyListsContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 20,
+  },
+  emptyListsText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1C1C1E',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptyListsSubtext: {
+    fontSize: 14,
+    color: '#8E8E93',
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  emptyListsActions: {
+    flexDirection: 'row',
+    gap: 12,
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+  },
+  retryListButton: {
+    backgroundColor: 'rgba(106, 149, 113, 0.2)',
+  },
+  createListButton: {
+    backgroundColor: '#6A9571',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+    marginTop: 8,
+  },
+  createListButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  listItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+    minHeight: 64,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0, 0, 0, 0.06)',
+  },
+  listItemContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  listItemIcon: {
+    fontSize: 24,
+    marginRight: 12,
+  },
+  listItemInfo: {
+    flex: 1,
+  },
+  listItemName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1C1C1E',
+    marginBottom: 4,
+  },
+  listItemMeta: {
+    fontSize: 13,
+    color: '#8E8E93',
   },
   allergenChipList: {
     flexDirection: 'row',

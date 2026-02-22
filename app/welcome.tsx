@@ -19,7 +19,7 @@ export default function WelcomeScreen() {
 
   const handleGetStarted = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
-    router.replace('/auth')
+    router.replace('/onboarding')
   }
 
   return (
@@ -54,13 +54,22 @@ export default function WelcomeScreen() {
           </Text>
         </View>
 
-        {/* Get Started Button */}
+        {/* Buttons */}
         <View style={styles.buttonSection}>
           <Pressable 
             style={styles.getStartedButton}
             onPress={handleGetStarted}
           >
             <Text style={styles.getStartedButtonText}>Get Started</Text>
+          </Pressable>
+          <Pressable 
+            style={styles.signInButton}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+              router.replace('/auth')
+            }}
+          >
+            <Text style={styles.signInButtonText}>Sign In</Text>
           </Pressable>
         </View>
       </View>
@@ -131,6 +140,16 @@ const styles = StyleSheet.create({
   buttonSection: {
     width: '100%',
     alignItems: 'center',
+    gap: 16,
+  },
+  signInButton: {
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+  },
+  signInButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#6A9571',
   },
   getStartedButton: {
     backgroundColor: 'rgba(255, 255, 255, 0.9)',

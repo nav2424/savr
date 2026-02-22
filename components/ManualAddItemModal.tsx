@@ -45,9 +45,9 @@ const CATEGORIES = [
   { id: 'Meat, Poultry & Seafood', label: 'Meat, Poultry & Seafood', emoji: '🍗' },
   { id: 'Dairy & Eggs', label: 'Dairy & Eggs', emoji: '🥛' },
   { id: 'Grains, Bread & Pasta', label: 'Grains, Bread & Pasta', emoji: '🌾' },
-  { id: 'Condiments, Sauces & Spreads', label: 'Condiments, Sauces & Spreads', emoji: '🥫' },
+  { id: 'Condiments, Sauces & Spreads', label: 'Condiments and Sauces', emoji: '🥫' },
   { id: 'Pantry Staples & Essentials', label: 'Pantry Staples & Essentials', emoji: '🧂' },
-  { id: 'Plant-Based Proteins & Legumes', label: 'Plant-Based Proteins & Legumes', emoji: '🍱' },
+  { id: 'Plant-Based Proteins & Legumes', label: 'Proteins and Legumes', emoji: '🍱' },
   { id: 'Snacks, Sweets & Desserts', label: 'Snacks, Sweets & Desserts', emoji: '🍫' },
   { id: 'Beverages', label: 'Beverages', emoji: '🥤' },
   { id: 'Non-Food / Misc', label: 'Non-Food / Misc', emoji: '📦' },
@@ -203,7 +203,7 @@ export default function ManualAddItemModal({ visible, onClose }: ManualAddItemMo
                 })
 
                 await addItem(formattedItem)
-                await refreshItems()
+                // No need to refresh - real-time subscription handles updates
                 await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
                 Alert.alert('Success', `${itemName} added to pantry!`)
                 handleReset()
@@ -230,8 +230,8 @@ export default function ManualAddItemModal({ visible, onClose }: ManualAddItemMo
 
       await addItem(formattedItem)
       
-      // Refresh pantry to immediately show the new item
-      await refreshItems()
+      // No need to refresh - real-time subscription will update UI instantly
+      // refreshItems() is redundant and causes unnecessary network requests
       
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
       Alert.alert('Success', `${itemName} added to pantry!`)

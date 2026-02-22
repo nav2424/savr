@@ -29,14 +29,7 @@ export async function chatWithSage(
   receipts: any[] = []
 ): Promise<string> {
   try {
-    // Basic guard: ensure API key exists to avoid silent failures
-    if (!config.openaiApiKey) {
-      debugLog('SAGE API key missing. Seen values =>', {
-        hasProcessEnv: !!(process as any)?.env?.EXPO_PUBLIC_OPENAI_API_KEY,
-        hasExtra: !!((require('expo-constants').default?.expoConfig || {}).extra || {}).EXPO_PUBLIC_OPENAI_API_KEY
-      })
-      return 'SAGE is unavailable: API key missing. Restart app after adding EXPO_PUBLIC_OPENAI_API_KEY.'
-    }
+    const hasDirectKey = !!config.openaiApiKey
     const messages: ChatMessage[] = [
       {
         role: 'system',
@@ -341,6 +334,10 @@ Always use the bullet point formatting with blank lines between each item.`
       }
     } catch (e) {
       debugLog('Proxy call failed, falling back to direct providers', e)
+    }
+
+    if (!hasDirectKey) {
+      return 'SAGE is unavailable: the server proxy is not running. Start the proxy with OPENAI_API_KEY in /server/.env and try again.'
     }
 
     // Retry with exponential backoff for transient errors (direct to OpenAI)
@@ -778,6 +775,10 @@ IMPORTANT: Return ONLY the JSON object, nothing else.`
       }
     } catch (proxyError) {
       debugLog('Proxy failed, using direct API', proxyError)
+      if (!config.openaiApiKey) {
+        debugLog('Recipe generation skipped: no direct API key configured')
+        return null
+      }
       // Fallback to direct API
       response = await fetch(OPENAI_API_URL, {
         method: 'POST',

@@ -19,6 +19,7 @@ Notifications.setNotificationHandler({
 
 class NotificationsService {
   private pushToken: string | null = null
+  private hasShownRLSWarning = false // Track if RLS warning has been shown this session
   
   // Smart notification scheduling for user retention
   async scheduleSmartNotifications(userId: string, pantryItems?: any[]): Promise<void> {
@@ -43,7 +44,7 @@ class NotificationsService {
         await Notifications.scheduleNotificationAsync({
           content: {
             title: 'Pantry Check!',
-            body: 'Check your pantry for expiring items and save them with recipes',
+            body: 'Check your pantry for expiring items',
             data: { type: 'pantry_check', screen: '/(tabs)/pantry' }
           },
           trigger: {
@@ -69,20 +70,7 @@ class NotificationsService {
           }
         })
         
-        // Schedule cooking inspiration (Sunday 5 PM)
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title: 'Cooking Inspiration!',
-            body: 'Discover new recipes from your pantry items',
-            data: { type: 'cooking_inspiration', screen: '/(tabs)/recipes' }
-          },
-          trigger: {
-            type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
-            weekday: 1, // Sunday
-            hour: 17,
-            minute: 0
-          }
-        })
+        // Recipe-related notifications disabled – no cooking inspiration scheduled
       }
       
       // Schedule expiry notifications for pantry items (only if expiry alerts enabled)
@@ -186,33 +174,9 @@ class NotificationsService {
     }
   }
   
-  // Send notification when recipe is suggested
-  async notifyRecipeSuggestion(recipeName: string, matchPercentage: number, userId?: string): Promise<void> {
-    try {
-      // Check user notification preferences if userId provided
-      if (userId) {
-        const preferences = await userPreferencesService.loadPreferences(userId)
-        const notificationPrefs = preferences?.notifications
-        
-        // Don't send if push notifications or recipe suggestions are disabled
-        if (notificationPrefs) {
-          if (!notificationPrefs.pushNotifications || !notificationPrefs.recipeSuggestions) {
-            return
-          }
-        }
-      }
-      
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: `🍳 New Recipe: ${recipeName}`,
-          body: `${matchPercentage}% match with your pantry! Try it today!`,
-          data: { type: 'recipe_suggestion', recipeName }
-        },
-        trigger: null // Send immediately
-      })
-    } catch (error) {
-      console.error('Error sending recipe notification:', error)
-    }
+  // Recipe notifications disabled – no notifications associated with recipes
+  async notifyRecipeSuggestion(_recipeName: string, _matchPercentage: number, _userId?: string): Promise<void> {
+    // No-op: recipe notifications are disabled
   }
   
   // Send immediate notification for important events
@@ -233,11 +197,19 @@ class NotificationsService {
         }
         
         // Check specific notification type preferences
-        const notificationType = notification.data?.type
-        if (notificationType === 'list_update' && notificationPrefs && !notificationPrefs.listUpdates) {
+      const notificationType = notification.data?.type
+      const isListUpdate = notificationType === 'list_update' ||
+        notificationType === 'item_added' ||
+        notificationType === 'item_deleted' ||
+        notificationType === 'item_completed' ||
+        notificationType === 'item_uncompleted' ||
+        notificationType === 'item_updated'
+
+      if (isListUpdate && notificationPrefs && !notificationPrefs.listUpdates) {
           return
         }
-        if (notificationType === 'recipe_suggestion' && notificationPrefs && !notificationPrefs.recipeSuggestions) {
+        // Recipe notifications disabled – never send recipe-related notifications
+        if (notificationType === 'recipe_suggestion') {
           return
         }
         if (notificationType === 'expiry_alert' && notificationPrefs && !notificationPrefs.expiryAlerts) {
@@ -345,17 +317,20 @@ class NotificationsService {
 
       if (error) {
         if (error.code === '42501') {
-          // RLS policy issue - provide helpful instructions
-          console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          console.log('⚠️  SUPABASE RLS POLICY NEEDS UPDATE');
-          console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          console.log('📊 Your push_tokens table needs RLS policies');
-          console.log('\n🔧 Quick Fix:');
-          console.log('   1. Open Supabase Dashboard → SQL Editor');
-          console.log('   2. Run: fix-push-tokens-rls-complete.sql');
-          console.log('   3. Reload the app');
-          console.log('\n💡 Push notifications will work after this fix');
-          console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+          // RLS policy issue - provide helpful instructions (only show once per session)
+          if (!this.hasShownRLSWarning) {
+            this.hasShownRLSWarning = true
+            console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('⚠️  SUPABASE RLS POLICY NEEDS UPDATE');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('📊 Your push_tokens table needs RLS policies');
+            console.log('\n🔧 Quick Fix:');
+            console.log('   1. Open Supabase Dashboard → SQL Editor');
+            console.log('   2. Run: fix-push-tokens-rls-complete.sql');
+            console.log('   3. Reload the app');
+            console.log('\n💡 Push notifications will work after this fix');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+          }
         } else {
           console.error('Error saving push token:', error);
         }
@@ -386,10 +361,18 @@ class NotificationsService {
       
       // Check specific notification type preferences
       const notificationType = data?.type
-      if (notificationType === 'list_update' && notificationPrefs && !notificationPrefs.listUpdates) {
+      const isListUpdate = notificationType === 'list_update' ||
+        notificationType === 'item_added' ||
+        notificationType === 'item_deleted' ||
+        notificationType === 'item_completed' ||
+        notificationType === 'item_uncompleted' ||
+        notificationType === 'item_updated'
+
+      if (isListUpdate && notificationPrefs && !notificationPrefs.listUpdates) {
         return
       }
-      if (notificationType === 'recipe_suggestion' && notificationPrefs && !notificationPrefs.recipeSuggestions) {
+      // Recipe notifications disabled – never send recipe-related notifications
+      if (notificationType === 'recipe_suggestion') {
         return
       }
       if (notificationType === 'expiry_alert' && notificationPrefs && !notificationPrefs.expiryAlerts) {
@@ -421,6 +404,19 @@ class NotificationsService {
     data?: any
   ): Promise<void> {
     try {
+      // Prefer edge function (uses service role to access tokens across users)
+      try {
+        const { data: fnData, error: fnError } = await (supabase as any).functions.invoke(
+          'notify-list-collaborators',
+          { body: { listId, title, body, data } }
+        )
+        if (!fnError && fnData?.success) {
+          return
+        }
+      } catch (invokeError) {
+        console.warn('Edge function notify failed, falling back to client', invokeError)
+      }
+
       const { data: userData, error: authError } = await supabase.auth.getUser()
       
       // Handle refresh token errors gracefully

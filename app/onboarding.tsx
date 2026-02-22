@@ -12,15 +12,21 @@ import {
   Platform,
   Modal,
   FlatList,
+  ActivityIndicator,
 } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { StatusBar } from 'expo-status-bar'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 import { useRouter, useLocalSearchParams } from 'expo-router'
 import * as Haptics from 'expo-haptics'
-import { userPreferencesService } from '../lib/UserPreferencesService'
+import { userPreferencesService, mergeOnboardingWithDefaults, PENDING_ONBOARDING_STORAGE_KEY } from '../lib/UserPreferencesService'
+
+const PENDING_SIGNUP_PROFILE_KEY = 'pending_signup_profile_v1'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
+import { useToast } from '../lib/ToastContext'
 
+const ONBOARDING_COMPLETED_KEY = 'onboarding_completed_v1'
 const { width, height } = Dimensions.get('window')
 
 const ONBOARDING_STEPS = [
@@ -45,17 +51,29 @@ const ONBOARDING_STEPS = [
     subtitle: 'Set your monthly grocery budget',
   },
   {
-    id: 'complete',
-    title: 'All Set',
-    subtitle: "You're ready to start saving",
+    id: 'createAccount',
+    title: 'Create Your Account',
+    subtitle: 'Almost there! Enter your details to get started',
   },
 ]
 
 
+const validateEmail = (email: string): { valid: boolean; error?: string } => {
+  const trimmed = (email || '').trim().toLowerCase()
+  if (!trimmed) return { valid: false, error: 'Email is required' }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+  if (!emailRegex.test(trimmed)) return { valid: false, error: 'Please enter a valid email address' }
+  if (trimmed.includes('..') || trimmed.startsWith('.') || trimmed.startsWith('@')) {
+    return { valid: false, error: 'Please enter a valid email address' }
+  }
+  return { valid: true }
+}
+
 export default function OnboardingScreen() {
   const router = useRouter()
   const params = useLocalSearchParams<{ email?: string }>()
-  const { user, session, loading: authLoading } = useAuth()
+  const { user, session, signUp, loading: authLoading } = useAuth()
+  const { showToast } = useToast()
   const [currentStep, setCurrentStep] = useState(0)
   const [progress] = useState(new Animated.Value(0))
   const fadeAnim = useRef(new Animated.Value(0)).current
@@ -77,6 +95,14 @@ export default function OnboardingScreen() {
   const [monthlyBudget, setMonthlyBudget] = useState('')
   const [showBudgetModal, setShowBudgetModal] = useState(false)
   const [customBudgetInput, setCustomBudgetInput] = useState('')
+
+  // Create Account (final step)
+  const [accountName, setAccountName] = useState('')
+  const [accountEmail, setAccountEmail] = useState('')
+  const [accountPassword, setAccountPassword] = useState('')
+  const [accountConfirmPassword, setAccountConfirmPassword] = useState('')
+  const [accountEmailError, setAccountEmailError] = useState<string | null>(null)
+  const [accountLoading, setAccountLoading] = useState(false)
 
   useEffect(() => {
     // Animate content on step change
@@ -127,19 +153,65 @@ export default function OnboardingScreen() {
   }
 
   const handleComplete = async () => {
+    // Create Account step: validate and sign up first (email collected at end of onboarding)
+    const isCreateAccountStep = currentStep === ONBOARDING_STEPS.length - 1
+    let userName = accountName.trim()
+    let userEmail = accountEmail.trim().toLowerCase() || params.email || user?.email || session?.user?.email || ''
+
+    if (isCreateAccountStep) {
+      if (!userName) {
+        showToast('Please enter your full name.', { kind: 'warning' })
+        return
+      }
+      if (!accountEmail.trim()) {
+        showToast('Please enter your email.', { kind: 'warning' })
+        return
+      }
+      const emailValidation = validateEmail(accountEmail.trim())
+      if (!emailValidation.valid) {
+        setAccountEmailError(emailValidation.error || 'Invalid email')
+        showToast(emailValidation.error || 'Invalid email format', { kind: 'error' })
+        return
+      }
+      setAccountEmailError(null)
+      userEmail = accountEmail.trim().toLowerCase()
+      if (!accountPassword) {
+        showToast('Please enter a password.', { kind: 'warning' })
+        return
+      }
+      if (accountPassword.length < 6) {
+        showToast('Password must be at least 6 characters.', { kind: 'warning' })
+        return
+      }
+      if (accountPassword !== accountConfirmPassword) {
+        showToast('Passwords do not match.', { kind: 'warning' })
+        return
+      }
+
+      setAccountLoading(true)
+      const { error: signUpError, emailWarning } = await signUp(userEmail, accountPassword, userName)
+      setAccountLoading(false)
+
+      if (signUpError) {
+        showToast(signUpError.message || 'Sign up failed. Please try again.', { kind: 'error', durationMs: 4000 })
+        return
+      }
+      if (emailWarning) {
+        showToast('Account created. Check your email to verify.', { kind: 'success' })
+      }
+    }
+
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
     
-    // Get user info for saving
+    // Get user info for saving preferences
     let userId = user?.id || session?.user?.id
-    let userEmail = params.email || user?.email || session?.user?.email
-    let userName = user?.name || session?.user?.user_metadata?.name || ''
     
-    // If still no userId, try getting session directly from Supabase
+    // If still no userId (e.g. right after signUp), try getting session directly from Supabase
     if (!userId) {
       const { data: { session: directSession } } = await supabase.auth.getSession()
       userId = directSession?.user?.id
-      userEmail = userEmail || directSession?.user?.email
-      userName = userName || directSession?.user?.user_metadata?.name || ''
+      userEmail = userEmail || directSession?.user?.email || ''
+      if (!userName) userName = directSession?.user?.user_metadata?.name || ''
     }
     
     // If still no userId, try getting the current user
@@ -149,47 +221,78 @@ export default function OnboardingScreen() {
       userEmail = userEmail || authUser?.email
       userName = userName || authUser?.user_metadata?.name || ''
     }
+
+    // Fallback: userId from pending signup (stored by AuthContext when signUp succeeds).
+    // Session may not be available yet when user completes onboarding right after signup.
+    if (!userId) {
+      try {
+        const raw = await AsyncStorage.getItem(PENDING_SIGNUP_PROFILE_KEY)
+        if (raw) {
+          const pending = JSON.parse(raw) as { userId?: string; email?: string; name?: string }
+          if (pending?.userId) {
+            userId = pending.userId
+            userEmail = userEmail || pending.email || undefined
+            userName = userName || pending.name || ''
+          }
+        }
+      } catch {
+        // non-blocking
+      }
+    }
     
-    // Save all preferences to backend
-    const preferences = {
+    // Build partial payload from onboarding (what we collect)
+    const partialPayload = {
       location: { country },
       household: { size: householdSize },
       dietary: { allergies },
       budget: { monthly: monthlyBudget },
     }
-    
+    const fullPreferences = mergeOnboardingWithDefaults(partialPayload, null)
+
+    const stashPendingOnboarding = async () => {
+      try {
+        await AsyncStorage.setItem(PENDING_ONBOARDING_STORAGE_KEY, JSON.stringify({
+          preferences: partialPayload,
+          name: userName || undefined,
+          email: userEmail || undefined,
+        }))
+      } catch (e) {
+        console.warn('Could not stash pending onboarding data', e)
+      }
+    }
+
+    // Always stash onboarding data so it can be applied when user enters the app (e.g. after email
+    // verification or on fresh open). Saves during onboarding can fail or session may not be ready.
+    await stashPendingOnboarding()
+
     try {
       if (userId) {
-        // Save preferences
-        const { error: prefError } = await userPreferencesService.savePreferences(preferences, userId)
+        const { error: prefError } = await userPreferencesService.savePreferences(fullPreferences, userId)
         if (prefError) {
-          console.error('Error saving preferences:', prefError)
+          console.error('Error saving preferences during onboarding:', prefError)
         } else {
-          console.log('Preferences saved successfully')
+          console.log('Preferences saved during onboarding')
         }
 
-        // Update user profile with name and email if available
         if (userName || userEmail) {
-          const updateData: any = {}
+          const updateData: Record<string, string> = {}
           if (userName) updateData.name = userName
           if (userEmail) updateData.email = userEmail
-          
+
           const { error: profileError } = await supabase
             .from('users')
             .update(updateData)
             .eq('id', userId)
-          
+
           if (profileError) {
             console.error('Error updating user profile:', profileError)
-          } else {
-            console.log('User profile updated successfully')
           }
         }
       } else {
-        console.warn('No user ID available for saving preferences - user may not be authenticated yet')
+        console.warn('No user ID during onboarding - data stashed to apply after sign-in')
       }
     } catch (error) {
-      console.error('Error saving data:', error)
+      console.error('Error saving onboarding data:', error)
     }
     
     // Wait a moment to ensure auth state is ready before navigating
@@ -210,6 +313,15 @@ export default function OnboardingScreen() {
       console.log('Could not check verification status, navigating to verification screen')
     }
     
+    // Mark onboarding completed so index sends unverified users to email-verification (not back here)
+    if (userId) {
+      try {
+        await AsyncStorage.setItem(`${ONBOARDING_COMPLETED_KEY}_${userId}`, 'true')
+      } catch (e) {
+        // non-blocking
+      }
+    }
+
     // Navigate to email verification screen (will check and redirect to tabs if already verified)
     // Pass email as query parameter if available
     try {
@@ -395,7 +507,7 @@ export default function OnboardingScreen() {
     }
   }
 
-  // Predefined allergies list
+  // Predefined allergies list (Wheat only — no separate Gluten; wheat detection covers gluten-containing grains)
   const predefinedAllergies = [
     'Peanuts', 
     'Tree Nuts', 
@@ -406,7 +518,6 @@ export default function OnboardingScreen() {
     'Soy', 
     'Wheat',
     'Sesame',
-    'Gluten'
   ]
 
   // Get custom allergies (those not in predefined list)
@@ -837,7 +948,7 @@ export default function OnboardingScreen() {
     )
   }
 
-  const renderComplete = () => {
+  const renderCreateAccount = () => {
     const formatBudget = (amount: string) => {
       if (!amount) return ''
       return `$${parseInt(amount).toLocaleString()}/month`
@@ -853,59 +964,86 @@ export default function OnboardingScreen() {
           },
         ]}
       >
-        <View style={styles.completeIconContainer}>
-          <View style={styles.completeIconCircle}>
-            <Text style={styles.completeIcon}>✓</Text>
-          </View>
-        </View>
-        
-        <View style={styles.completeContent}>
-          <Text style={styles.completeTitle}>
-            Profile Complete
-          </Text>
-          <Text style={styles.completeSubtitle}>
-            You're all set to start saving money and eating better with SAVR
-          </Text>
-        </View>
-
         <View style={styles.summaryBox}>
           <Text style={styles.summaryTitle}>Your Preferences</Text>
           <View style={styles.summaryDivider} />
-          
-          {(() => {
-            const items = []
-            if (country) {
-              items.push({ label: 'Location', value: country })
-            }
-            if (householdSize) {
-              items.push({ 
-                label: 'Household Size', 
-                value: `${householdSize} ${householdSize === '1' ? 'person' : 'people'}` 
-              })
-            }
-            if (allergies.length > 0) {
-              items.push({ 
-                label: 'Allergies', 
-                value: allergies.length === 1 ? allergies[0] : `${allergies.length} selected` 
-              })
-            }
-            if (monthlyBudget) {
-              items.push({ label: 'Monthly Budget', value: formatBudget(monthlyBudget) })
-            }
-            
-            return items.map((item, index) => (
-              <View 
-                key={item.label}
-                style={[
-                  styles.summaryItem,
-                  index === items.length - 1 && styles.summaryItemLast
-                ]}
-              >
-                <Text style={styles.summaryItemLabel}>{item.label}</Text>
-                <Text style={styles.summaryItemValue}>{item.value}</Text>
-              </View>
-            ))
-          })()}
+          {country && (
+            <View style={styles.summaryItem}>
+              <Text style={styles.summaryItemLabel}>Location</Text>
+              <Text style={styles.summaryItemValue}>{country}</Text>
+            </View>
+          )}
+          {householdSize && (
+            <View style={styles.summaryItem}>
+              <Text style={styles.summaryItemLabel}>Household</Text>
+              <Text style={styles.summaryItemValue}>{householdSize} {householdSize === '1' ? 'person' : 'people'}</Text>
+            </View>
+          )}
+          {allergies.length > 0 && (
+            <View style={styles.summaryItem}>
+              <Text style={styles.summaryItemLabel}>Allergies</Text>
+              <Text style={styles.summaryItemValue}>{allergies.length === 1 ? allergies[0] : `${allergies.length} selected`}</Text>
+            </View>
+          )}
+          {monthlyBudget && (
+            <View style={[styles.summaryItem, styles.summaryItemLast]}>
+              <Text style={styles.summaryItemLabel}>Budget</Text>
+              <Text style={styles.summaryItemValue}>{formatBudget(monthlyBudget)}</Text>
+            </View>
+          )}
+        </View>
+
+        <Text style={styles.createAccountFormTitle}>Create your account</Text>
+        
+        <View style={styles.createAccountInputWrapper}>
+          <Text style={styles.createAccountLabel}>Full Name</Text>
+          <TextInput
+            style={styles.createAccountInput}
+            placeholder="Enter your full name"
+            placeholderTextColor="#8E8E93"
+            value={accountName}
+            onChangeText={setAccountName}
+            autoCapitalize="words"
+            editable={!accountLoading}
+          />
+        </View>
+        <View style={styles.createAccountInputWrapper}>
+          <Text style={styles.createAccountLabel}>Email</Text>
+          <TextInput
+            style={[styles.createAccountInput, accountEmailError && styles.createAccountInputError]}
+            placeholder="Enter your email"
+            placeholderTextColor="#8E8E93"
+            value={accountEmail}
+            onChangeText={(t) => { setAccountEmail(t); setAccountEmailError(null) }}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            editable={!accountLoading}
+          />
+          {accountEmailError && <Text style={styles.createAccountErrorText}>{accountEmailError}</Text>}
+        </View>
+        <View style={styles.createAccountInputWrapper}>
+          <Text style={styles.createAccountLabel}>Password</Text>
+          <TextInput
+            style={styles.createAccountInput}
+            placeholder="At least 6 characters"
+            placeholderTextColor="#8E8E93"
+            value={accountPassword}
+            onChangeText={setAccountPassword}
+            secureTextEntry
+            editable={!accountLoading}
+          />
+        </View>
+        <View style={styles.createAccountInputWrapper}>
+          <Text style={styles.createAccountLabel}>Confirm Password</Text>
+          <TextInput
+            style={styles.createAccountInput}
+            placeholder="Confirm your password"
+            placeholderTextColor="#8E8E93"
+            value={accountConfirmPassword}
+            onChangeText={setAccountConfirmPassword}
+            secureTextEntry
+            editable={!accountLoading}
+          />
         </View>
       </Animated.View>
     )
@@ -917,7 +1055,7 @@ export default function OnboardingScreen() {
       case 'location': return renderLocation()
       case 'household': return renderHousehold()
       case 'budget': return renderBudget()
-      case 'complete': return renderComplete()
+      case 'createAccount': return renderCreateAccount()
       default: return null
     }
   }
@@ -975,18 +1113,24 @@ export default function OnboardingScreen() {
             styles.nextButton, 
             currentStep === 0 && styles.nextButtonFull,
             pressed && styles.nextButtonPressed,
+            accountLoading && styles.nextButtonDisabled,
           ]}
           onPress={handleNext}
+          disabled={accountLoading}
         >
           <LinearGradient
-            colors={['#5A8A6A', '#6A9571', '#7BA67D']}
+            colors={accountLoading ? ['#9E9E9E', '#B0B0B0'] : ['#5A8A6A', '#6A9571', '#7BA67D']}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.nextButtonGradient}
           >
-            <Text style={styles.nextButtonText}>
-              {currentStep === ONBOARDING_STEPS.length - 1 ? 'Get Started' : 'Continue'}
-            </Text>
+            {accountLoading ? (
+              <ActivityIndicator color="#FFFFFF" size="small" />
+            ) : (
+              <Text style={styles.nextButtonText}>
+                {currentStep === ONBOARDING_STEPS.length - 1 ? 'Create Account' : 'Continue'}
+              </Text>
+            )}
           </LinearGradient>
         </Pressable>
       </View>
@@ -2257,6 +2401,41 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     flex: 1,
   },
+  createAccountFormTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1A1A1A',
+    marginTop: 24,
+    marginBottom: 16,
+  },
+  createAccountInputWrapper: {
+    marginBottom: 16,
+  },
+  createAccountLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1A1A1A',
+    marginBottom: 8,
+  },
+  createAccountInput: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    fontSize: 16,
+    color: '#1A1A1A',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.1)',
+  },
+  createAccountInputError: {
+    borderColor: '#FF3B30',
+    borderWidth: 2,
+  },
+  createAccountErrorText: {
+    fontSize: 13,
+    color: '#FF3B30',
+    marginTop: 6,
+  },
   navigation: {
     position: 'absolute',
     bottom: 0,
@@ -2335,6 +2514,9 @@ const styles = StyleSheet.create({
   },
   nextButtonPressed: {
     transform: [{ scale: 0.98 }],
+  },
+  nextButtonDisabled: {
+    opacity: 0.7,
   },
   nextButtonText: {
     fontSize: 17,

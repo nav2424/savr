@@ -133,7 +133,7 @@ export default function BarcodeScanner({ onScanSuccess, onClose }: BarcodeScanne
             style={styles.permissionButton}
             onPress={requestPermission}
           >
-            <Text style={styles.permissionButtonText}>Grant Permission</Text>
+            <Text style={styles.permissionButtonText}>Continue</Text>
           </Pressable>
           <Pressable style={styles.closeButton} onPress={onClose}>
             <Text style={styles.closeButtonText}>Cancel</Text>

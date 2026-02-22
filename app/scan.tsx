@@ -18,10 +18,11 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router'
 import { CameraView, useCameraPermissions, BarcodeScanningResult } from 'expo-camera'
 import * as ImagePicker from 'expo-image-picker'
+import * as FileSystem from 'expo-file-system'
 import { LinearGradient } from 'expo-linear-gradient'
 import { Ionicons } from '@expo/vector-icons'
 import * as Haptics from 'expo-haptics'
-import { scanningService, ScannedItem } from '../lib/ScanningService'
+import { scanningService, ScannedItem, ScanResult as ReceiptScanResult } from '../lib/ScanningService'
 import { usePantry } from '../lib/PantryContext'
 import { receiptsService } from '../lib/ReceiptsService'
 import { useAuth } from '../lib/AuthContext'
@@ -30,9 +31,12 @@ import { userPreferencesService } from '../lib/UserPreferencesService'
 import { expiryPredictionService } from '../lib/ExpiryPredictionService'
 import { priceLearningService } from '../lib/PriceLearningService'
 import { barcodeService, ScanResult } from '../lib/BarcodeService'
+import { getBestResult } from '../lib/AllergenResultStore'
 import ScanResultModal from '../components/ScanResultModal'
 import ManualProductEntry from '../components/ManualProductEntry'
 import { logger } from '../lib/Logger'
+import { runWithConcurrency } from '../lib/asyncBatch'
+import { useToast } from '../lib/ToastContext'
 
 const { width } = Dimensions.get('window')
 
@@ -45,6 +49,7 @@ export default function ScanScreen() {
   const { user } = useAuth()
   const { addItem } = usePantry()
   const { refreshReceipts } = useReceipts()
+  const { showToast } = useToast()
   const [permission, requestPermission] = useCameraPermissions()
   // Default to receipt mode if coming from pantry, otherwise barcode
   const initialMode = (params.mode === 'receipt' ? 'receipt' : 'barcode') as ScanMode
@@ -61,18 +66,33 @@ export default function ScanScreen() {
   }, [params.mode])
   const [scannedItems, setScannedItems] = useState<ScannedItem[]>([])
   const [storeName, setStoreName] = useState<string>('')
+  const [receiptTotal, setReceiptTotal] = useState<number | null>(null)
+  const [receiptCalculatedTotal, setReceiptCalculatedTotal] = useState(0)
+  const [receiptNeedsReview, setReceiptNeedsReview] = useState(false)
+  const [estimatedTax, setEstimatedTax] = useState<number | null>(null)
+  const [receiptSubtotal, setReceiptSubtotal] = useState<number | null>(null)
+  const [receiptTax, setReceiptTax] = useState<number | null>(null)
+  const [receiptScanResult, setReceiptScanResult] = useState<ReceiptScanResult | null>(null)
+  const [receiptSaved, setReceiptSaved] = useState(false)
   const [editingItemIndex, setEditingItemIndex] = useState<number | null>(null)
   const [editedName, setEditedName] = useState('')
   const [editedQuantity, setEditedQuantity] = useState('')
+  const [editedPrice, setEditedPrice] = useState('')
   const [budgetImpact, setBudgetImpact] = useState<{ percentage: number; budget: number } | null>(null)
   const [barcodeResult, setBarcodeResult] = useState<ScanResult | null>(null)
   const [showBarcodeModal, setShowBarcodeModal] = useState(false)
   const [showManualEntry, setShowManualEntry] = useState(false)
   const [scannedBarcode, setScannedBarcode] = useState(false)
   const [scanning, setScanning] = useState(false)
+  const [scanProgress, setScanProgress] = useState(0)
+  const [scanEtaSeconds, setScanEtaSeconds] = useState<number | null>(null)
+  const [addingToPantry, setAddingToPantry] = useState(false)
   const cameraRef = useRef<any>(null)
   const pulseAnim = useRef(new Animated.Value(1)).current
   const scanLineAnim = useRef(new Animated.Value(0)).current
+  const scanTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const scanStartTimeRef = useRef<number | null>(null)
+  const receiptFlowCompletedRef = useRef(false)
 
   // Pulse animation for analyzing state
   const startPulseAnimation = () => {
@@ -90,6 +110,175 @@ export default function ScanScreen() {
         }),
       ])
     ).start()
+  }
+
+  const isWeightBasedItem = (item: ScannedItem) =>
+    !!item.unit && ['kg', 'lb', 'lbs', 'g', 'oz'].includes(item.unit.toLowerCase())
+
+  const getLineTotal = (item: ScannedItem) => {
+    const price = typeof item.price === 'number' ? item.price : 0
+    const quantity = typeof item.quantity === 'number' && item.quantity > 0 ? item.quantity : 1
+    return isWeightBasedItem(item) ? price : price * quantity
+  }
+
+  const calculateReceiptTotal = (items: ScannedItem[]) =>
+    items.reduce((sum, item) => sum + getLineTotal(item), 0)
+
+  const getEstimatedTaxFromDifference = (
+    extractedTotal: number | null,
+    calculated: number,
+    provided?: number | null,
+    receiptSubtotalValue?: number | null
+  ) => {
+    if (calculated <= 0.01) return null
+    if (typeof provided === 'number' && provided > 0) return provided
+    if (typeof receiptSubtotalValue === 'number' && receiptSubtotalValue > 0 && extractedTotal) {
+      if (calculated < receiptSubtotalValue * 0.7) return null
+      const diff = extractedTotal - receiptSubtotalValue
+      return diff > 0.01 ? diff : null
+    }
+    if (!extractedTotal || extractedTotal <= 0 || calculated <= 0) return null
+    if (calculated < extractedTotal * 0.7) return null
+    const diff = extractedTotal - calculated
+    if (diff <= 0.01) return null
+    const ratio = diff / extractedTotal
+    if (ratio < 0.02 || ratio > 0.15) return null
+    return diff
+  }
+
+  const updateReceiptSummary = (
+    items: ScannedItem[],
+    extractedTotal: number | null,
+    providedTax?: number | null,
+    providedSubtotal?: number | null
+  ) => {
+    const calculated = calculateReceiptTotal(items)
+    const hasReceiptSubtotal = typeof providedSubtotal === 'number' && providedSubtotal > 0
+    const hasReceiptTax = typeof providedTax === 'number' && providedTax > 0
+    const hasReceiptTotal = typeof extractedTotal === 'number' && extractedTotal > 0
+    
+    // The key validation: calculated should match subtotal (not total)
+    // Tax accounts for the difference between subtotal and total
+    const subtotalDifference = hasReceiptSubtotal ? Math.abs(providedSubtotal - calculated) : null
+    
+    // Validation passes if calculated matches subtotal within $0.50
+    const subtotalMatches = subtotalDifference !== null && subtotalDifference <= 0.50
+    
+    // If we don't have explicit subtotal but have total and tax, derive it
+    let derivedSubtotal = providedSubtotal
+    let derivedTax = providedTax
+    if (!hasReceiptSubtotal && hasReceiptTotal) {
+      // Try to estimate tax as the difference between total and calculated
+      const potentialTax = extractedTotal - calculated
+      if (potentialTax > 0 && potentialTax / extractedTotal <= 0.15) {
+        derivedSubtotal = calculated
+        derivedTax = potentialTax
+      }
+    }
+    
+    const hasAllPrices = items.every(item => typeof item.price === 'number' && item.price > 0)
+    
+    // Needs review if calculated doesn't match subtotal OR if scan result marked needsReview
+    // Enforce "no OCR = no auto-save" - if OCR failed, needsReview is true
+    const needsReview =
+      !hasAllPrices ||
+      calculated <= 0.01 ||
+      (hasReceiptSubtotal && !subtotalMatches) ||
+      receiptScanResult?.needsReview === true
+    
+    setReceiptCalculatedTotal(calculated)
+    setReceiptNeedsReview(needsReview)
+    setEstimatedTax(derivedTax ?? null)
+    setReceiptSubtotal(derivedSubtotal ?? null)
+    return { calculated, subtotalDifference, hasReceiptTotal, needsReview }
+  }
+
+  const persistReceipt = async (scanResult: ReceiptScanResult, items: ScannedItem[]) => {
+    if (!user?.id) return
+    
+    // CRITICAL: Use EXACT scan result object - do not reconstruct
+    // Only update items if they're actually different (shouldn't happen, but safety check)
+    const scanResultToSave: ReceiptScanResult = {
+      ...scanResult,
+      items: items.length > scanResult.items.length ? items : scanResult.items, // Only use items if more items
+      // Preserve all flags exactly as they are
+      needsReview: scanResult.needsReview ?? false,
+      validationPassed: scanResult.validationPassed ?? false,
+      subtotalMismatch: scanResult.subtotalMismatch ?? false,
+      totalMismatch: scanResult.totalMismatch ?? false
+    }
+    
+    // Log exact object being saved to confirm needsReview stays true
+    // CRITICAL: This log must show needsReview=true if it was true in the scan result
+    logger.debug('Saving receipt with exact scan result (right before save)', {
+      itemCount: scanResultToSave.items.length,
+      needsReview: scanResultToSave.needsReview,
+      validationPassed: scanResultToSave.validationPassed,
+      receiptTotal: scanResultToSave.receiptTotal,
+      receiptSubtotal: scanResultToSave.receiptSubtotal,
+      receiptTax: scanResultToSave.receiptTax,
+      subtotalMismatch: scanResultToSave.subtotalMismatch,
+      totalMismatch: scanResultToSave.totalMismatch,
+      ocrFailed: scanResultToSave.needsReview === true && scanResultToSave.validationPassed === false ? 'likely' : 'no'
+    })
+    
+    // Calculate total for budget BEFORE saving
+    const calculatedSubtotal = calculateReceiptTotal(items)
+    const taxAmount = scanResult.receiptTax ?? scanResult.estimatedTax ?? 0
+    const totalForBudget = scanResult.receiptTotal ?? (calculatedSubtotal + taxAmount)
+    
+    await receiptsService.saveReceipt({
+      userId: user.id,
+      scanResult: scanResultToSave // Use exact object, no reconstruction
+    }).then(async (saveResult) => {
+      if (saveResult.success) {
+        logger.debug('Receipt saved successfully', { total: totalForBudget })
+        setReceiptSaved(true)
+        
+        // Immediately refresh receipts to update budget
+        try {
+          await refreshReceipts()
+          logger.debug('Receipts refreshed - budget updated!', { total: totalForBudget })
+        } catch (error) {
+          logger.error('Error refreshing receipts', { error })
+        }
+
+        const receiptItemsForLearning = items
+          .filter(item => item.price && item.price > 0)
+          .map(item => ({
+            name: item.name,
+            quantity: item.quantity || 1,
+            price: item.price || 0,
+            unit: item.unit
+          }))
+
+        if (receiptItemsForLearning.length > 0) {
+          priceLearningService.learnFromReceipt(user.id, {
+            store: scanResult.store || 'Unknown Store',
+            date: new Date(),
+            items: receiptItemsForLearning
+          }).then(() => {
+            logger.debug('Learned prices from receipt', { itemCount: receiptItemsForLearning.length })
+          }).catch((error) => {
+            logger.error('Error learning prices', { error })
+          })
+        }
+
+        userPreferencesService.loadPreferences(user.id).then((preferences) => {
+          const budgetGoal = preferences?.budget?.monthly || 0
+          const monthlyBudget = typeof budgetGoal === 'number' ? budgetGoal : parseFloat(budgetGoal) || 0
+
+          if (monthlyBudget > 0) {
+            // Use total (includes tax) for budget impact
+            const percentOfBudget = (totalForBudget / monthlyBudget) * 100
+            logger.debug('Budget impact calculated', { percentOfBudget, monthlyBudget, total: totalForBudget })
+            setBudgetImpact({ percentage: percentOfBudget, budget: monthlyBudget })
+          }
+        })
+      } else {
+        logger.error('Error saving receipt', { error: saveResult.error })
+      }
+    })
   }
 
   // Scan line animation for barcode mode
@@ -116,6 +305,55 @@ export default function ScanScreen() {
     }
   }, [scanMode, screenState])
 
+  React.useEffect(() => {
+    if (screenState !== 'analyzing') {
+      if (scanTimerRef.current) {
+        clearInterval(scanTimerRef.current)
+        scanTimerRef.current = null
+      }
+      scanStartTimeRef.current = null
+      setScanProgress(0)
+      setScanEtaSeconds(null)
+      return
+    }
+
+    // Receipt scanning can take up to 2 minutes for large receipts
+    const estimatedMs = scanMode === 'receipt' ? 90000 : 15000
+    scanStartTimeRef.current = Date.now()
+    setScanProgress(0.02)
+    setScanEtaSeconds(Math.round(estimatedMs / 1000))
+
+    scanTimerRef.current = setInterval(() => {
+      if (!scanStartTimeRef.current) return
+      const elapsed = Date.now() - scanStartTimeRef.current
+      // Progress bar fills to 85% over estimated time, then slows down
+      // This prevents showing 0s while still processing
+      const baseProgress = Math.min(elapsed / estimatedMs, 0.85)
+      // After 85%, slow down progress significantly
+      const extraProgress = elapsed > estimatedMs ? Math.min((elapsed - estimatedMs) / (estimatedMs * 2), 0.10) : 0
+      const targetProgress = baseProgress + extraProgress
+      
+      // Calculate remaining time - minimum 5s while still processing
+      let remainingSeconds: number
+      if (elapsed < estimatedMs) {
+        remainingSeconds = Math.max(5, Math.round((estimatedMs - elapsed) / 1000))
+      } else {
+        // After estimated time, show "Almost done..." instead of 0
+        remainingSeconds = -1 // Signal to show different text
+      }
+      
+      setScanProgress((prev) => Math.max(prev, targetProgress))
+      setScanEtaSeconds(remainingSeconds)
+    }, 500)
+
+    return () => {
+      if (scanTimerRef.current) {
+        clearInterval(scanTimerRef.current)
+        scanTimerRef.current = null
+      }
+    }
+  }, [screenState, scanMode])
+
   if (!permission) {
     return <View style={styles.container} />
   }
@@ -131,7 +369,7 @@ export default function ScanScreen() {
           </Text>
           <Pressable style={styles.permissionButton} onPress={requestPermission}>
             <LinearGradient colors={['#6A9571', '#8AB896']} style={styles.permissionButtonGradient}>
-              <Text style={styles.permissionButtonText}>Grant Permission</Text>
+              <Text style={styles.permissionButtonText}>Continue</Text>
             </LinearGradient>
           </Pressable>
         </LinearGradient>
@@ -140,33 +378,53 @@ export default function ScanScreen() {
   }
 
   const handleScan = async (imageUri: string) => {
+    if (receiptFlowCompletedRef.current) return
     setScreenState('analyzing')
     startPulseAnimation()
+    setScanProgress(0)
+    setScanEtaSeconds(null)
 
     try {
-      // Convert image to base64
-      const base64 = await scanningService.imageUriToBase64(imageUri)
-
       if (scanMode === 'receipt') {
         // Scan receipt (with validation and double-checking)
-        const result = await scanningService.scanReceipt(base64)
+        // Pass imageUri directly - scanReceipt will preprocess it for OCR
+        const result = await scanningService.scanReceipt(imageUri)
+        if (!result.items.length) {
+          Alert.alert('Scan Failed', 'No items were detected. Please retake the photo.')
+          setScreenState('camera')
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+          return
+        }
         setScannedItems(result.items)
         setStoreName(result.store || 'Unknown Store')
+        // Ensure receiptTotal is set - use calculated total if receiptTotal is missing
+        const finalReceiptTotal = result.receiptTotal || 
+          (result.receiptSubtotal && result.receiptTax 
+            ? result.receiptSubtotal + result.receiptTax 
+            : result.calculatedTotal || null)
+        setReceiptTotal(finalReceiptTotal)
+        setReceiptSubtotal(result.receiptSubtotal || null)
+        setReceiptTax(result.receiptTax || null)
+        setReceiptScanResult(result)
+        setReceiptSaved(false)
         
         // Log receipt analysis with validation info
-        // Calculate total correctly: price is unit price, multiply by quantity
-        const calculatedTotal = result.calculatedTotal || result.items.reduce((sum, item) => {
-          const unitPrice = item.price || 0
-          const quantity = item.quantity || 1
-          return sum + (unitPrice * quantity)
-        }, 0)
+        const { calculated, needsReview } = updateReceiptSummary(
+          result.items,
+          result.receiptTotal || null,
+          result.estimatedTax ?? null,
+          result.receiptSubtotal ?? null
+        )
         logger.debug('Receipt analysis complete', {
           store: result.store,
           itemCount: result.items.length,
           receiptTotal: result.receiptTotal,
-          calculatedTotal: calculatedTotal,
+          calculatedTotal: calculated,
           validationPassed: result.validationPassed,
-          totalDifference: result.receiptTotal ? Math.abs(result.receiptTotal - calculatedTotal) : null,
+          totalDifference: result.receiptTotal ? Math.abs(result.receiptTotal - calculated) : null,
+          estimatedTax: result.estimatedTax,
+          receiptSubtotal: result.receiptSubtotal,
+          receiptTax: result.receiptTax,
           items: result.items.map(item => ({
             name: item.name,
             price: item.price,
@@ -176,99 +434,51 @@ export default function ScanScreen() {
         })
         
         // Warn if validation failed
-        if (result.receiptTotal && !result.validationPassed) {
-          const difference = Math.abs(result.receiptTotal - calculatedTotal)
-          console.warn(`⚠️ Receipt total mismatch: Receipt shows $${result.receiptTotal.toFixed(2)}, calculated $${calculatedTotal.toFixed(2)} (difference: $${difference.toFixed(2)})`)
+        if (result.receiptTotal && !result.validationPassed && !result.estimatedTax) {
+          const difference = Math.abs(result.receiptTotal - calculated)
+          logger.warn('Receipt total mismatch', {
+            receiptTotal: result.receiptTotal,
+            calculated,
+            difference,
+          })
         }
         
         // Warn if receipt total wasn't extracted
         if (!result.receiptTotal) {
-          console.warn('⚠️ Receipt total not extracted - some items may be missing')
+          logger.warn('Receipt total not extracted - some items may be missing')
         }
         
         // Update UI state FIRST before async operations
+        setScanProgress(1)
         setScreenState('results')
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
         
-        // Save receipt and show budget impact (non-blocking)
-        if (user?.id) {
-          // Calculate total correctly
-          // For weight-based items, price is already the LINE TOTAL (don't multiply)
-          // For count-based items, price is UNIT PRICE (multiply by quantity)
-          const calculatedTotal = result.items.reduce((sum, item) => {
-            const price = item.price || 0
-            const quantity = item.quantity || 1
-            const isWeightBased = item.unit && ['kg', 'lb', 'lbs', 'g', 'oz'].includes((item.unit || '').toLowerCase())
-            
-            if (isWeightBased) {
-              return sum + price // Price is already line total
-            } else {
-              return sum + (price * quantity) // Price is unit price
-            }
-          }, 0)
-          
-          // Run async operations without blocking UI
-          receiptsService.saveReceipt({
-            userId: user.id,
-            scanResult: result
-          }).then((saveResult) => {
-            if (saveResult.success) {
-              logger.debug('Receipt saved successfully', { total: calculatedTotal })
-              
-              // Fallback: Manually refresh receipts if real-time doesn't work
-              setTimeout(async () => {
-                try {
-                  await refreshReceipts()
-                  logger.debug('Receipts refreshed as fallback')
-                } catch (error) {
-                  logger.error('Error refreshing receipts', { error })
-                }
-              }, 1000)
-              
-              // 🧠 AI LEARNING: Learn prices from this receipt
-              const receiptItemsForLearning = result.items
-                .filter(item => item.price && item.price > 0)
-                .map(item => ({
-                  name: item.name,
-                  quantity: item.quantity || 1,
-                  price: item.price || 0,
-                  unit: item.unit
-                }))
-              
-              if (receiptItemsForLearning.length > 0) {
-                priceLearningService.learnFromReceipt(user.id, {
-                  store: result.store || 'Unknown Store',
-                  date: new Date(),
-                  items: receiptItemsForLearning
-                }).then(() => {
-                  logger.debug('Learned prices from receipt', { itemCount: receiptItemsForLearning.length })
-                }).catch((error) => {
-                  logger.error('Error learning prices', { error })
-                })
-              }
-              
-              // Get budget to show impact
-              userPreferencesService.loadPreferences(user.id).then((preferences) => {
-                const budgetGoal = preferences?.budget?.monthly || 0
-                const monthlyBudget = typeof budgetGoal === 'number' ? budgetGoal : parseFloat(budgetGoal) || 0
-                
-                if (monthlyBudget > 0) {
-                  const percentOfBudget = (calculatedTotal / monthlyBudget) * 100
-                  logger.debug('Budget impact calculated', { percentOfBudget, monthlyBudget })
-                  setBudgetImpact({ percentage: percentOfBudget, budget: monthlyBudget })
-                }
-              }).catch((error) => {
-                logger.error('Error loading preferences', { error })
-              })
-            }
-          }).catch((error) => {
-            logger.error('Error saving receipt', { error })
-          })
+        // Removed review required alert - user can still save even if totals don't match
+        if (false) { // Disabled review check
+          // This block is intentionally disabled
+        } else {
+          // Never auto-save when needsReview is true or validation failed
+          if (!needsReview && result.validationPassed) {
+            // CRITICAL: Use EXACT result object - do not reconstruct or override flags
+            await persistReceipt(result, result.items)
+          } else {
+            // CRITICAL: Log the EXACT needsReview from result object, not the local variable
+            logger.debug('Receipt not auto-saved', {
+              needsReview: result.needsReview,
+              validationPassed: result.validationPassed,
+              itemCount: result.items.length,
+              receiptTotal: result.receiptTotal
+            })
+          }
         }
       } else {
-        // Scan single item
-        const item = await scanningService.scanItem(base64)
+        // Scan single item (scanItem expects base64)
+        const imageBase64 = await FileSystem.readAsStringAsync(imageUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        })
+        const item = await scanningService.scanItem(imageBase64)
         if (item) {
+          setScanProgress(1)
           setScannedItems([item])
           setStoreName('')
           setScreenState('results')
@@ -279,7 +489,7 @@ export default function ScanScreen() {
       }
     } catch (error) {
       logger.error('Scan error', { error, mode: scanMode })
-      Alert.alert('Scan Failed', 'Could not process the image. Please try again.')
+      showToast('Scan failed. Please try again.', { kind: 'error', durationMs: 3500 })
       setScreenState('camera')
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
     }
@@ -303,7 +513,7 @@ export default function ScanScreen() {
       const barcodeInfo = barcodeService.getBarcodeInfo(data)
       if (!barcodeInfo.valid) {
         await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
-        Alert.alert('Invalid Barcode', 'This barcode format is not supported')
+        showToast('Invalid barcode format (not supported).', { kind: 'warning', durationMs: 3500 })
         setTimeout(() => {
           setScannedBarcode(false)
           setScanning(false)
@@ -328,7 +538,7 @@ export default function ScanScreen() {
     } catch (error) {
       logger.error('Barcode scan error', { error, barcode: data })
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
-      Alert.alert('Scan Error', 'Failed to process barcode. Please try again.')
+      showToast('Failed to process barcode. Please try again.', { kind: 'error', durationMs: 3500 })
       setTimeout(() => {
         setScannedBarcode(false)
         setScanning(false)
@@ -341,7 +551,8 @@ export default function ScanScreen() {
     setBarcodeResult(null)
     setScannedBarcode(false)
     setScanning(false)
-    router.back()
+    // Navigate to pantry instead of going back (safer - avoids GO_BACK error)
+    router.push('/(tabs)/pantry')
   }
 
   const handleAddAnother = () => {
@@ -363,17 +574,18 @@ export default function ScanScreen() {
     setShowManualEntry(false)
     setScannedBarcode(false)
     setScanning(false)
-    router.back()
+    // Navigate to pantry instead of going back (safer - avoids GO_BACK error)
+    router.push('/(tabs)/pantry')
   }
 
   const handleTakePhoto = async () => {
     if (scanMode === 'barcode') {
-      Alert.alert('Barcode Mode', 'Point camera at barcode to scan automatically. No need to take photo.')
+      showToast('Barcode mode: point camera at the barcode to scan automatically.', { kind: 'info', durationMs: 3000 })
       return
     }
     
     if (!cameraRef.current) {
-      Alert.alert('Error', 'Camera not ready')
+      showToast('Camera not ready.', { kind: 'error', durationMs: 3000 })
       return
     }
 
@@ -391,111 +603,192 @@ export default function ScanScreen() {
       }
     } catch (error) {
       logger.error('Camera error', { error })
-      Alert.alert('Error', 'Failed to capture photo')
+      showToast('Failed to capture photo.', { kind: 'error', durationMs: 3500 })
     }
   }
 
   const handleChooseFromLibrary = async () => {
     try {
+      // Request media library permissions if needed
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync()
+      if (status !== 'granted') {
+        Alert.alert(
+          'Permission Required',
+          'Please grant photo library access to select images.',
+          [{ text: 'OK' }]
+        )
+        return
+      }
+
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsEditing: false,
         quality: 1.0,
+        base64: false, // We'll convert to base64 in handleScan if needed
       })
 
       if (!result.canceled && result.assets[0]) {
-        await handleScan(result.assets[0].uri)
+        try {
+          await handleScan(result.assets[0].uri)
+        } catch (scanError: any) {
+          // Handle errors from handleScan separately
+          logger.error('Scan error after library selection', { 
+            error: scanError || 'Unknown scan error',
+            errorType: typeof scanError,
+            errorString: String(scanError)
+          })
+          Alert.alert(
+            'Scan Error',
+            scanError?.message || 'Failed to process the selected image. Please try again.'
+          )
+          setScreenState('camera')
+        }
       }
-    } catch (error) {
-      logger.error('Library error', { error })
-      Alert.alert('Error', 'Failed to select photo')
+    } catch (error: any) {
+      // Handle null errors gracefully
+      if (error === null || error === undefined) {
+        logger.error('Library error (null)', { 
+          errorType: 'null',
+          message: 'Error object was null or undefined'
+        })
+        Alert.alert('Error', 'Failed to select photo. Please try again.')
+        return
+      }
+
+      // Capture more error details
+      const errorDetails = {
+        message: error?.message || String(error) || 'Unknown error',
+        code: error?.code,
+        name: error?.name,
+        type: typeof error,
+        stringified: String(error),
+      }
+      logger.error('Library error', { error: errorDetails })
+      Alert.alert(
+        'Error',
+        error?.message || String(error) || 'Failed to select photo. Please try again.'
+      )
     }
   }
 
   const handleAddToPantry = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+    setAddingToPantry(true)
     
-    let expiryPredictionsCount = 0
-    
-    for (const item of scannedItems) {
-      // Auto-predict expiry date if not present
-      let expiryDate = item.expiry_date
-      let expiryPredicted = false
+    try {
+      // 1. Batch add all items in parallel for speed
+      const purchaseDate = new Date().toISOString().split('T')[0]
+      let expiryPredictionsCount = 0
       
-      if (!expiryDate) {
-        const purchaseDate = new Date().toISOString().split('T')[0]
-        const prediction = expiryPredictionService.predictExpiry(
-          item.name,
-          item.category,
-          item.location as 'fridge' | 'freezer' | 'pantry',
-          purchaseDate
-        )
+      const tasks = scannedItems.map((item) => async () => {
+        // Auto-predict expiry date if not present
+        let expiryDate = item.expiry_date
+        let expiryPredicted = false
         
-        // Use AI suggestion if confidence is medium or high
-        if (prediction.confidence === 'high' || prediction.confidence === 'medium') {
-          expiryDate = prediction.expiryDate
-          expiryPredicted = true
-          expiryPredictionsCount++
-          logger.debug('AI expiry prediction', { itemName: item.name, expiryDate: prediction.expiryDate, days: prediction.days, confidence: prediction.confidence })
-        } else {
-          logger.debug('Low confidence expiry prediction', { itemName: item.name })
+        if (!expiryDate) {
+          const prediction = expiryPredictionService.predictExpiry(
+            item.name,
+            item.category,
+            item.location as 'fridge' | 'freezer' | 'pantry',
+            purchaseDate
+          )
+          
+          // Use AI suggestion if confidence is medium or high
+          if (prediction.confidence === 'high' || prediction.confidence === 'medium') {
+            expiryDate = prediction.expiryDate
+            expiryPredicted = true
+            expiryPredictionsCount++
+            logger.debug('AI expiry prediction', { itemName: item.name, expiryDate: prediction.expiryDate, days: prediction.days, confidence: prediction.confidence })
+          }
+        }
+        
+        return addItem({
+          name: item.name,
+          category: item.category,
+          quantity: item.quantity,
+          unit: item.unit,
+          location: item.location,
+          icon: item.emoji,
+          price: item.price, // Include price for budget tracking
+          store: storeName || undefined,
+          purchase_date: purchaseDate,
+          expiry_date: expiryDate, // Include predicted or existing expiry date
+        })
+      })
+      
+      // Add items with a small concurrency limit to avoid UI/network spikes on big receipts.
+      // (Parallel enough to be fast, but not "500 requests at once".)
+      const results = await runWithConcurrency(tasks, 8)
+      
+      // Log any failures but don't block the flow
+      const failures = results.filter(r => r.status === 'rejected')
+      if (failures.length > 0) {
+        logger.warn('Some items failed to add to pantry', { 
+          failedCount: failures.length, 
+          totalCount: tasks.length 
+        })
+        // Show a warning but don't block - user can see what was added
+        if (failures.length === tasks.length) {
+          // All items failed - this is a real error
+          throw new Error('Failed to add items to pantry')
         }
       }
       
-      await addItem({
-        name: item.name,
-        category: item.category,
-        quantity: item.quantity,
-        unit: item.unit,
-        location: item.location,
-        icon: item.emoji,
-        price: item.price, // Include price for budget tracking
-        store: storeName || undefined,
-        purchase_date: new Date().toISOString().split('T')[0],
-        expiry_date: expiryDate, // Include predicted or existing expiry date
-      })
+      // 2. Save receipt to history and update budget
+      if (receiptScanResult && user?.id) {
+        // Calculate total for budget (use receipt total which includes tax - this is what user actually paid)
+        const calculatedSubtotal = calculateReceiptTotal(scannedItems)
+        const taxAmount = receiptTax ?? estimatedTax ?? 0
+        const total = typeof receiptTotal === 'number' && receiptTotal > 0
+          ? receiptTotal
+          : calculatedSubtotal + taxAmount
+        
+        // Ensure receiptTotal is set in scan result if it wasn't already
+        const scanResultToSave: ReceiptScanResult = {
+          ...receiptScanResult,
+          items: scannedItems,
+          receiptTotal: receiptTotal ?? total,
+          receiptSubtotal: receiptSubtotal ?? calculatedSubtotal,
+          receiptTax: receiptTax ?? estimatedTax ?? taxAmount
+        }
+        
+        // Save receipt to history (this will trigger budget update via realtime)
+        await persistReceipt(scanResultToSave, scannedItems)
+      }
+      
+      // 3. Mark receipt flow done, reset state, then replace with pantry (no back stack)
+      receiptFlowCompletedRef.current = true
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+      setAddingToPantry(false)
+      resetReceiptState()
+      router.replace('/(tabs)/pantry')
+      
+    } catch (error) {
+      logger.error('Error adding items to pantry', { error })
+      setAddingToPantry(false)
+      Alert.alert('Error', 'Failed to add items to pantry. Please try again.')
     }
+  }
 
-    // Calculate total and show budget impact (price is unit price, multiply by quantity)
-    const total = scannedItems.reduce((sum, item) => {
-      const unitPrice = item.price || 0
-      const quantity = item.quantity || 1
-      return sum + (unitPrice * quantity)
-    }, 0)
-    
-    let message = `Added ${scannedItems.length} ${scannedItems.length === 1 ? 'item' : 'items'} to pantry`
-    
-    if (total > 0) {
-      message += `\n\n💰 Total: $${total.toFixed(2)}\n📊 Budget automatically updated!`
-    }
-    
-    if (expiryPredictionsCount > 0) {
-      message += `\n\n📅 Expiry dates auto-predicted for ${expiryPredictionsCount} ${expiryPredictionsCount === 1 ? 'item' : 'items'}!`
-    }
-
-    Alert.alert('Success!', message, [
-      {
-        text: 'View Budget',
-        onPress: () => {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-          router.push('/budget-tracking')
-        },
-      },
-      {
-        text: 'OK',
-        onPress: () => {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-          router.back()
-        },
-      },
-    ])
+  const resetReceiptState = () => {
+    setScreenState('camera')
+    setScannedItems([])
+    setStoreName('')
+    setReceiptTotal(null)
+    setReceiptSubtotal(null)
+    setReceiptTax(null)
+    setReceiptCalculatedTotal(0)
+    setReceiptNeedsReview(false)
+    setEstimatedTax(null)
+    setReceiptScanResult(null)
+    setReceiptSaved(false)
+    setBudgetImpact(null)
   }
 
   const handleScanAnother = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-    setScreenState('camera')
-    setScannedItems([])
-    setStoreName('')
+    receiptFlowCompletedRef.current = false
+    resetReceiptState()
   }
 
   const handleEditItem = (index: number) => {
@@ -504,6 +797,7 @@ export default function ScanScreen() {
     setEditingItemIndex(index)
     setEditedName(item.name)
     setEditedQuantity(item.quantity.toString())
+    setEditedPrice(typeof item.price === 'number' ? item.price.toFixed(2) : '')
   }
 
   const handleSaveEdit = () => {
@@ -512,16 +806,41 @@ export default function ScanScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
     
     const updatedItems = [...scannedItems]
+    const parsedPrice = parseFloat(editedPrice)
     updatedItems[editingItemIndex] = {
       ...updatedItems[editingItemIndex],
       name: editedName,
       quantity: parseInt(editedQuantity) || updatedItems[editingItemIndex].quantity,
+      price: !isNaN(parsedPrice) ? parsedPrice : updatedItems[editingItemIndex].price,
     }
     
     setScannedItems(updatedItems)
+    const extractedTotal = receiptTotal ?? receiptScanResult?.receiptTotal ?? null
+    const { needsReview } = updateReceiptSummary(
+      updatedItems,
+      extractedTotal,
+      receiptScanResult?.estimatedTax ?? null,
+      receiptScanResult?.receiptSubtotal ?? null
+    )
+    // Never auto-save when needsReview is true or validation failed
+    if (!needsReview && receiptScanResult && !receiptSaved && receiptScanResult.validationPassed) {
+      const calculatedTotal = calculateReceiptTotal(updatedItems)
+      // CRITICAL: Use EXACT receiptScanResult object - only update items if needed
+      // Preserve all flags (needsReview, validationPassed, etc.) exactly as they are
+      const scanResultToSave: ReceiptScanResult = {
+        ...receiptScanResult,
+        items: updatedItems.length > receiptScanResult.items.length ? updatedItems : receiptScanResult.items,
+        receiptTotal: extractedTotal || receiptScanResult.receiptTotal,
+        calculatedTotal
+        // DO NOT override validationPassed or needsReview - preserve original flags
+      }
+      
+      persistReceipt(scanResultToSave, updatedItems)
+    }
     setEditingItemIndex(null)
     setEditedName('')
     setEditedQuantity('')
+    setEditedPrice('')
   }
 
   const handleCancelEdit = () => {
@@ -529,6 +848,7 @@ export default function ScanScreen() {
     setEditingItemIndex(null)
     setEditedName('')
     setEditedQuantity('')
+    setEditedPrice('')
   }
 
   // Camera Screen
@@ -548,14 +868,17 @@ export default function ScanScreen() {
             ],
           }}
           onBarcodeScanned={!scannedBarcode ? handleBarcodeScanned : undefined}
-        >
-          {/* Header */}
-          <View style={styles.header}>
+        />
+        {/* Overlay content using absolute positioning */}
+        {/* Header */}
+        <View style={styles.header}>
             <Pressable
               style={styles.closeButton}
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-                router.back()
+                receiptFlowCompletedRef.current = true
+                resetReceiptState()
+                router.replace('/(tabs)/pantry')
               }}
             >
               <Ionicons name="close" size={32} color="#FFFFFF" />
@@ -636,11 +959,18 @@ export default function ScanScreen() {
               )}
             </View>
 
-            <Text style={styles.scanHint}>
-              {scanMode === 'receipt'
-                ? 'Position receipt within frame'
-                : 'Point camera at barcode - auto-detects'}
-            </Text>
+            <View style={styles.scanHintContainer}>
+              <Text style={styles.scanHint}>
+                {scanMode === 'receipt'
+                  ? 'Position receipt within frame'
+                  : 'Point camera at barcode - auto-detects'}
+              </Text>
+              {scanMode === 'receipt' && (
+                <Text style={styles.receiptTip}>
+                  Hold steady and frame the full receipt for fastest, most accurate results.
+                </Text>
+              )}
+            </View>
           </View>
 
           {/* Bottom Controls */}
@@ -674,7 +1004,6 @@ export default function ScanScreen() {
               </View>
             )}
           </View>
-        </CameraView>
       </View>
   )
 
@@ -700,6 +1029,26 @@ export default function ScanScreen() {
             {scanMode === 'receipt' ? 'Extracting items from your receipt' : 'Scanning barcode database'}
           </Text>
 
+          {scanMode === 'receipt' && (
+            <View style={styles.progressContainer}>
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: `${Math.round(scanProgress * 100)}%` }]} />
+              </View>
+              <Text style={styles.progressText}>
+                {scanEtaSeconds === null 
+                  ? 'Starting...'
+                  : scanEtaSeconds < 0 
+                    ? 'Almost done, finalizing...' 
+                    : `Estimated time remaining: ${scanEtaSeconds}s`}
+              </Text>
+              <Text style={styles.progressHint}>
+                {scanEtaSeconds !== null && scanEtaSeconds < 0 
+                  ? 'Large receipts may take a bit longer'
+                  : 'This is an estimate and may vary by receipt size.'}
+              </Text>
+            </View>
+          )}
+
           <ActivityIndicator size="large" color="#6A9571" style={styles.loader} />
         </LinearGradient>
       </View>
@@ -708,15 +1057,23 @@ export default function ScanScreen() {
   // Results Screen (for receipt scanning)
   const renderResultsScreen = () => (
     <View style={styles.container}>
+      {addingToPantry && (
+        <View style={styles.addingToPantryOverlay}>
+          <ActivityIndicator size="large" color="#6A9571" />
+          <Text style={styles.addingToPantryText}>Adding to pantry...</Text>
+        </View>
+      )}
       <LinearGradient colors={['#FEFCF6', '#E9F1EB']} style={styles.resultsContainer}>
         {/* Header */}
         <View style={styles.resultsHeader}>
-          <Pressable
-            style={styles.backButton}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-              router.back()
-            }}
+            <Pressable
+              style={styles.backButton}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+                receiptFlowCompletedRef.current = true
+                resetReceiptState()
+                router.replace('/(tabs)/pantry')
+              }}
           >
             <Ionicons name="close" size={24} color="#000000" />
           </Pressable>
@@ -738,13 +1095,28 @@ export default function ScanScreen() {
         {scanMode === 'receipt' && scannedItems.length > 0 && (
           <>
             <View style={styles.totalContainer}>
-              <Text style={styles.totalLabel}>Calculated Total</Text>
+              <View>
+                <Text style={styles.totalLabel}>RECEIPT TOTAL</Text>
+                {receiptSubtotal !== null && (
+                  <Text style={styles.totalSubtext}>
+                    Subtotal: {`$${receiptSubtotal.toFixed(2)}`}
+                  </Text>
+                )}
+                {(receiptTax ?? estimatedTax) !== null && (
+                  <Text style={styles.totalSubtext}>
+                    Tax: {`$${(receiptTax ?? estimatedTax ?? 0).toFixed(2)}`}
+                  </Text>
+                )}
+              </View>
               <Text style={styles.totalAmount}>
-                ${scannedItems.reduce((sum, item) => {
-                  const unitPrice = item.price || 0
-                  const quantity = item.quantity || 1
-                  return sum + (unitPrice * quantity)
-                }, 0).toFixed(2)}
+                {(() => {
+                  // Calculate total: prefer receiptTotal, then subtotal+tax, then calculated total
+                  const total = receiptTotal ?? 
+                    (receiptSubtotal !== null 
+                      ? (receiptSubtotal + (receiptTax ?? estimatedTax ?? 0))
+                      : receiptCalculatedTotal)
+                  return `$${(total || 0).toFixed(2)}`
+                })()}
               </Text>
             </View>
             
@@ -799,7 +1171,14 @@ export default function ScanScreen() {
                 )}
               </View>
               {item.price && (
-                <Text style={styles.itemPrice}>${item.price.toFixed(2)}</Text>
+                <View style={styles.itemPriceContainer}>
+                  <Text style={styles.itemPrice}>${getLineTotal(item).toFixed(2)}</Text>
+                  {!isWeightBasedItem(item) && item.quantity > 1 && (
+                    <Text style={styles.itemPriceSubtext}>
+                      ${item.price.toFixed(2)} each
+                    </Text>
+                  )}
+                </View>
               )}
               <Ionicons name="chevron-forward" size={20} color="#C7C7CC" />
             </Pressable>
@@ -815,7 +1194,10 @@ export default function ScanScreen() {
             <Text style={styles.secondaryButtonText}>Scan Another</Text>
           </Pressable>
 
-          <Pressable style={styles.actionButton} onPress={handleAddToPantry}>
+          <Pressable
+            style={styles.actionButton}
+            onPress={handleAddToPantry}
+          >
             <LinearGradient
               colors={['#6A9571', '#8AB896']}
               style={styles.primaryButtonGradient}
@@ -892,6 +1274,25 @@ export default function ScanScreen() {
                     placeholder="Quantity"
                     keyboardType="numeric"
                   />
+
+                  <Text style={styles.inputLabel}>Price on Receipt</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={editedPrice}
+                    onChangeText={(text) => {
+                      const sanitized = text.replace(/[^0-9.]/g, '')
+                      setEditedPrice(sanitized)
+                    }}
+                    onBlur={() => {
+                      if (editedPrice === '') return
+                      const parsed = parseFloat(editedPrice)
+                      if (!isNaN(parsed)) {
+                        setEditedPrice(parsed.toFixed(2))
+                      }
+                    }}
+                    placeholder="0.00"
+                    keyboardType="decimal-pad"
+                  />
                 </ScrollView>
 
                 <View style={styles.modalActions}>
@@ -928,11 +1329,17 @@ export default function ScanScreen() {
       {screenState === 'camera' && renderCameraScreen()}
       {screenState === 'analyzing' && renderAnalyzingScreen()}
 
-      {/* Barcode Result Modal - Always available */}
+      {/* Barcode Result Modal - Always available; use best result by source priority (MANUAL > OCR > OFF) */}
       <ScanResultModal
         visible={showBarcodeModal}
         product={barcodeResult?.product || null}
-        allergenCheck={barcodeResult?.allergenCheck}
+        allergenCheck={
+          barcodeResult?.scanSessionId
+            ? (getBestResult(barcodeResult.scanSessionId)?.result ?? barcodeResult?.allergenCheck)
+            : barcodeResult?.allergenCheck
+        }
+        scanSessionId={barcodeResult?.scanSessionId}
+        barcode={barcodeResult?.barcode}
         onClose={handleCloseBarcodeModal}
         onAddAnother={handleAddAnother}
       />
@@ -990,9 +1397,14 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
     paddingTop: 60,
     paddingHorizontal: 20,
     paddingBottom: 20,
+    zIndex: 10,
   },
   closeButton: {
     width: 44,
@@ -1003,9 +1415,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   modeToggleContainer: {
+    position: 'absolute',
+    top: 100,
+    left: 0,
+    right: 0,
     alignItems: 'center',
     paddingHorizontal: 20,
-    marginBottom: 20,
+    zIndex: 10,
   },
   modeToggle: {
     flexDirection: 'row',
@@ -1031,9 +1447,14 @@ const styles = StyleSheet.create({
     opacity: 1,
   },
   scanOverlay: {
-    flex: 1,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
+    zIndex: 5,
   },
   scanFrame: {
     width: width * 0.85,
@@ -1071,17 +1492,28 @@ const styles = StyleSheet.create({
     borderLeftWidth: 0,
     borderTopWidth: 0,
   },
+  scanHintContainer: {
+    marginTop: 24,
+    marginBottom: 120,
+  },
   scanHint: {
     fontSize: 16,
     fontWeight: '600',
     color: '#FFFFFF',
-    marginTop: 24,
-    marginBottom: 120,
+    marginBottom: 8,
     textAlign: 'center',
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 20,
+  },
+  receiptTip: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: 'rgba(255, 255, 255, 0.9)',
+    marginTop: 4,
+    textAlign: 'center',
+    paddingHorizontal: 20,
   },
   scanLine: {
     position: 'absolute',
@@ -1109,12 +1541,17 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   bottomControls: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
     paddingBottom: 50,
     paddingHorizontal: 20,
     minHeight: 120,
+    zIndex: 10,
   },
   barcodeInstructions: {
     alignItems: 'center',
@@ -1189,8 +1626,49 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 40,
   },
+  progressContainer: {
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  progressTrack: {
+    width: '100%',
+    height: 10,
+    borderRadius: 6,
+    backgroundColor: '#E0E8E2',
+    overflow: 'hidden',
+    marginBottom: 12,
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#6A9571',
+  },
+  progressText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4E6B58',
+    marginBottom: 4,
+  },
+  progressHint: {
+    fontSize: 12,
+    color: '#6A6A6A',
+    textAlign: 'center',
+  },
   loader: {
     marginTop: 20,
+  },
+  addingToPantryOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  addingToPantryText: {
+    marginTop: 12,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1C1C1E',
   },
   resultsContainer: {
     flex: 1,
@@ -1256,6 +1734,31 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '700',
     color: '#6A9571',
+  },
+  totalSubtext: {
+    fontSize: 12,
+    color: '#6A9571',
+    marginTop: 4,
+    textAlign: 'right',
+  },
+  receiptWarning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginHorizontal: 20,
+    borderRadius: 14,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+  },
+  receiptWarningText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#B45309',
   },
   budgetImpactContainer: {
     flexDirection: 'row',
@@ -1350,6 +1853,15 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#6A9571',
   },
+  itemPriceContainer: {
+    alignItems: 'flex-end',
+  },
+  itemPriceSubtext: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#8E8E93',
+    marginTop: 2,
+  },
   bottomActions: {
     flexDirection: 'row',
     gap: 12,
@@ -1361,6 +1873,9 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 16,
     overflow: 'hidden',
+  },
+  actionButtonDisabled: {
+    opacity: 0.6,
   },
   secondaryButton: {
     backgroundColor: 'rgba(255, 255, 255, 0.9)',

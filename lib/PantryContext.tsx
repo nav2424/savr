@@ -1,10 +1,11 @@
-// SAVR Pantry Context - Real-time pantry management with Supabase
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+// SAVR Pantry Context - Real-time pantry management with Supabase (supports shared households)
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react'
 import { supabase, PantryItem } from './supabase'
 import { useAuth } from './AuthContext'
+import { useHousehold } from './HouseholdContext'
 import { notificationsService } from './NotificationsService'
 import { logger } from './Logger'
-import { DatabaseError, getErrorMessage } from './errors'
+import { getErrorMessage } from './errors'
 
 interface PantryContextType {
   items: PantryItem[]
@@ -17,7 +18,7 @@ interface PantryContextType {
   findItemByName: (name: string) => PantryItem | undefined
   findItemByBarcode: (barcode: string) => PantryItem | undefined
   consumeItem: (itemName: string, quantity: number) => Promise<boolean>
-  refreshItems: () => Promise<void>
+  refreshItems: (opts?: { silent?: boolean }) => Promise<void>
   getItemsByLocation: (location: 'fridge' | 'freezer' | 'pantry') => PantryItem[]
   getItemsByCategory: (category: string) => PantryItem[]
   getExpiringItems: (daysThreshold?: number) => PantryItem[]
@@ -27,42 +28,12 @@ const PantryContext = createContext<PantryContextType | undefined>(undefined)
 
 export function PantryProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth()
+  const { currentHousehold } = useHousehold()
   const [items, setItems] = useState<PantryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Load items when user changes
-  useEffect(() => {
-    if (user) {
-      loadItems()
-      
-      // Subscribe to realtime changes
-      const subscription = supabase
-        .channel('pantry_changes')
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'pantry_items',
-            filter: `user_id=eq.${user.id}`
-          },
-          (payload) => {
-            handleRealtimeUpdate(payload)
-          }
-        )
-        .subscribe()
-
-      return () => {
-        subscription.unsubscribe()
-      }
-    } else {
-      setItems([])
-      setLoading(false)
-    }
-  }, [user])
-
-  const loadItems = async () => {
+  const loadItems = useCallback(async (silent = false) => {
     if (!user) {
       setItems([])
       setLoading(false)
@@ -70,9 +41,55 @@ export function PantryProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      setLoading(true)
+      if (!silent) {
+        setLoading(true)
+      }
       setError(null)
-      
+
+      // When a household is active, load both household items and legacy (pre-migration) items
+      // so the pantry is never empty for users who haven't run the migration or have mixed data.
+      if (currentHousehold?.id) {
+        const [householdRes, legacyRes] = await Promise.all([
+          supabase
+            .from('pantry_items')
+            .select('*')
+            .eq('household_id', currentHousehold.id)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('pantry_items')
+            .select('*')
+            .is('household_id', null)
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false }),
+        ])
+        if (householdRes.error) throw householdRes.error
+        if (legacyRes.error) throw legacyRes.error
+        const combined = [...(householdRes.data || []), ...(legacyRes.data || [])]
+        const byId = new Map<string, PantryItem>()
+        for (const item of combined) {
+          if (!byId.has(item.id)) byId.set(item.id, item as PantryItem)
+        }
+        const data = Array.from(byId.values()).sort(
+          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        )
+        const validItems = data.filter(item => item.quantity > 0)
+        const itemsToRemove = data.filter(item => item.quantity <= 0)
+        if (itemsToRemove.length > 0) {
+          logger.info(`Found ${itemsToRemove.length} items with quantity <= 0, removing from database`, {
+            count: itemsToRemove.length,
+            userId: user.id,
+          })
+          for (const item of itemsToRemove) {
+            await supabase.from('pantry_items').delete().eq('id', item.id)
+          }
+        }
+        setItems(validItems)
+        if (validItems.length > 0 && user?.id) {
+          notificationsService.scheduleSmartNotifications(user.id, validItems).catch(() => {})
+        }
+        return
+      }
+
       const { data, error: fetchError } = await supabase
         .from('pantry_items')
         .select('*')
@@ -81,10 +98,7 @@ export function PantryProvider({ children }: { children: ReactNode }) {
 
       if (fetchError) throw fetchError
 
-      // Filter out items with quantity <= 0 (shouldn't exist, but handle edge cases)
       const validItems = (data || []).filter(item => item.quantity > 0)
-      
-      // If any items were filtered out, remove them from database
       const itemsToRemove = (data || []).filter(item => item.quantity <= 0)
       if (itemsToRemove.length > 0) {
         logger.info(`Found ${itemsToRemove.length} items with quantity <= 0, removing from database`, {
@@ -92,28 +106,45 @@ export function PantryProvider({ children }: { children: ReactNode }) {
           userId: user.id,
         })
         for (const item of itemsToRemove) {
-          await supabase
-            .from('pantry_items')
-            .delete()
-            .eq('id', item.id)
-            .eq('user_id', user.id)
+          await supabase.from('pantry_items').delete().eq('id', item.id)
         }
       }
 
       setItems(validItems)
-      
-      // Schedule expiry notifications for loaded items
+
       if (validItems.length > 0 && user?.id) {
-        await notificationsService.scheduleSmartNotifications(user.id, validItems)
+        notificationsService.scheduleSmartNotifications(user.id, validItems).catch(() => {})
       }
     } catch (err: unknown) {
       logger.dbError('loadItems', err, { userId: user.id })
-      const errorMessage = getErrorMessage(err)
-      setError(errorMessage)
+      setError(getErrorMessage(err))
     } finally {
       setLoading(false)
     }
-  }
+  }, [user, currentHousehold?.id])
+
+  useEffect(() => {
+    if (user) {
+      loadItems()
+      // When a household is active we show both household + legacy items; RLS limits events to what we can see
+      const opts: { event: string; schema: string; table: string; filter?: string } = {
+        event: '*',
+        schema: 'public',
+        table: 'pantry_items',
+      }
+      if (!currentHousehold?.id) {
+        opts.filter = `user_id=eq.${user.id}`
+      }
+      const subscription = supabase
+        .channel('pantry_changes')
+        .on('postgres_changes', opts, (payload) => handleRealtimeUpdate(payload))
+        .subscribe()
+      return () => subscription.unsubscribe()
+    } else {
+      setItems([])
+      setLoading(false)
+    }
+  }, [user, currentHousehold?.id, loadItems])
 
   const handleRealtimeUpdate = (payload: any) => {
     const { eventType, new: newRecord, old: oldRecord } = payload
@@ -150,38 +181,32 @@ export function PantryProvider({ children }: { children: ReactNode }) {
     try {
       setError(null)
 
-      // Check database directly for existing item to avoid race conditions
-      // This ensures that even if we scan the same barcode twice quickly,
-      // we'll find the first item before it appears in the local state
+      const scopeFilter = currentHousehold?.id
+        ? { household_id: currentHousehold.id }
+        : { user_id: user.id }
+
       let existingItem: PantryItem | null = null
 
       if (item.barcode) {
-        // Check by barcode and location first (most accurate)
         const { data: barcodeMatch } = await supabase
           .from('pantry_items')
           .select('*')
-          .eq('user_id', user.id)
+          .match(scopeFilter)
           .eq('barcode', item.barcode)
           .eq('location', item.location)
           .maybeSingle()
-
-        if (barcodeMatch) {
-          existingItem = barcodeMatch as PantryItem
-        }
+        if (barcodeMatch) existingItem = barcodeMatch as PantryItem
       }
 
-      // If no barcode match, check by name (case-insensitive) and location
       if (!existingItem) {
         const { data: nameMatches } = await supabase
           .from('pantry_items')
           .select('*')
-          .eq('user_id', user.id)
+          .match(scopeFilter)
           .eq('location', item.location)
           .ilike('name', item.name)
-
-        if (nameMatches && nameMatches.length > 0) {
-          // Find exact match (case-insensitive, trimmed)
-          existingItem = nameMatches.find(i => 
+        if (nameMatches?.length) {
+          existingItem = nameMatches.find(i =>
             i.name.toLowerCase().trim() === item.name.toLowerCase().trim()
           ) as PantryItem || null
         }
@@ -226,23 +251,34 @@ export function PantryProvider({ children }: { children: ReactNode }) {
         })
         
         // Reschedule notifications if expiry date exists
+        // Use functional update to get latest state
         if (data.expiry_date && user?.id) {
-          const updatedItems = items.map(i => 
-            i.id === existingItem!.id ? data as PantryItem : i
-          )
-          await notificationsService.scheduleSmartNotifications(user.id, updatedItems)
+          setItems(prev => {
+            const updatedItems = prev.map(i => 
+              i.id === existingItem!.id ? data as PantryItem : i
+            )
+            // Schedule notifications with updated items (non-blocking)
+            notificationsService.scheduleSmartNotifications(user.id, updatedItems).catch(err => {
+              logger.error('Error scheduling notifications', { error: err })
+            })
+            return updatedItems
+          })
         }
         
         return data as PantryItem
       }
 
-      // No duplicate - add new item
+      const insertPayload: Record<string, unknown> = {
+        user_id: user.id,
+        ...item,
+      }
+      if (currentHousehold?.id) {
+        insertPayload.household_id = currentHousehold.id
+        insertPayload.added_by = user.id
+      }
       const { data, error: insertError } = await supabase
         .from('pantry_items')
-        .insert({
-          user_id: user.id,
-          ...item,
-        })
+        .insert(insertPayload)
         .select()
         .single()
 
@@ -252,13 +288,26 @@ export function PantryProvider({ children }: { children: ReactNode }) {
       logger.info('Added new pantry item', { itemName: item.name, itemId: data.id })
       
       // Reschedule notifications after adding item (if it has expiry date)
+      // Use functional update to get latest state
       if (data.expiry_date && user?.id) {
-        await notificationsService.scheduleSmartNotifications(user.id, items.concat([data as PantryItem]))
+        setItems(prev => {
+          const updatedItems = [...prev, data as PantryItem]
+          // Schedule notifications with updated items (non-blocking)
+          notificationsService.scheduleSmartNotifications(user.id, updatedItems).catch(err => {
+            logger.error('Error scheduling notifications', { error: err })
+          })
+          return updatedItems
+        })
       }
       
       return data as PantryItem
     } catch (err: unknown) {
-      logger.dbError('addItem', err, { itemName: item.name, userId: user.id })
+      // Only log error if err is not null/undefined
+      if (err) {
+        logger.dbError('addItem', err, { itemName: item.name, userId: user?.id })
+      } else {
+        logger.error('addItem failed with null/undefined error', { itemName: item.name, userId: user?.id })
+      }
       const errorMessage = getErrorMessage(err)
       setError(errorMessage)
       return null
@@ -284,7 +333,6 @@ export function PantryProvider({ children }: { children: ReactNode }) {
         .from('pantry_items')
         .delete()
         .eq('id', itemId)
-        .eq('user_id', user.id)
 
       if (deleteError) throw deleteError
 
@@ -334,17 +382,22 @@ export function PantryProvider({ children }: { children: ReactNode }) {
         .from('pantry_items')
         .update(updates)
         .eq('id', itemId)
-        .eq('user_id', user.id)
 
       if (updateError) throw updateError
 
       // Reschedule notifications if expiry date was updated
+      // Use functional update to get latest state
       if (updates.expiry_date !== undefined && user?.id) {
-        // Reload items to get updated state, then reschedule
-        const updatedItems = items.map(item => 
-          item.id === itemId ? { ...item, ...updates } : item
-        )
-        await notificationsService.scheduleSmartNotifications(user.id, updatedItems)
+        setItems(prev => {
+          const updatedItems = prev.map(item => 
+            item.id === itemId ? { ...item, ...updates } : item
+          )
+          // Schedule notifications with updated items (non-blocking)
+          notificationsService.scheduleSmartNotifications(user.id, updatedItems).catch(err => {
+            logger.error('Error scheduling notifications', { error: err })
+          })
+          return updatedItems
+        })
       }
 
       return true
@@ -388,9 +441,9 @@ export function PantryProvider({ children }: { children: ReactNode }) {
     return false
   }
 
-  const refreshItems = async (): Promise<void> => {
-    await loadItems()
-  }
+  const refreshItems = useCallback(async (opts?: { silent?: boolean }): Promise<void> => {
+    await loadItems(opts?.silent ?? false)
+  }, [loadItems])
 
   const getItemsByLocation = (location: 'fridge' | 'freezer' | 'pantry'): PantryItem[] => {
     return items.filter(item => item.location === location)

@@ -187,6 +187,13 @@ Before submitting for App Review, test:
 - **Updates:** Usually 24-48 hours
 - **Rejections:** Fix issues and resubmit
 
+### **7.3 Demo account (sign-in required)**
+If your app requires sign-in, Apple needs demo credentials:
+
+1. **Create a test/demo user** in Supabase (Authentication → Users → Add user). Use **Auto Confirm User** so reviewers don’t need email verification.
+2. In App Store Connect → **App Review Information**, enable **Sign-in required** and enter the demo **email** and **password**.
+3. Full steps and suggested credentials: **[docs/APP_STORE_DEMO_ACCOUNT.md](docs/APP_STORE_DEMO_ACCOUNT.md)**.
+
 ---
 
 ## 🔧 **Troubleshooting**
@@ -261,6 +268,7 @@ Before deploying, verify:
 - [ ] Screenshots uploaded
 - [ ] App description written
 - [ ] Keywords added
+- [ ] Demo account created (Supabase) and credentials added in App Review Information (see [docs/APP_STORE_DEMO_ACCOUNT.md](docs/APP_STORE_DEMO_ACCOUNT.md))
 
 ### **Testing**
 - [ ] TestFlight build tested on device

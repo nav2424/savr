@@ -55,6 +55,7 @@ import { LinearGradient } from 'expo-linear-gradient'
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar'
 import { Ionicons } from '@expo/vector-icons'
 import { useRouter, useLocalSearchParams } from 'expo-router'
+import { useFocusEffect } from '@react-navigation/native'
 import { useSimpleTheme } from '../lib/SimpleThemeContext'
 import { useListsUnified } from '../lib/useListsUnified'
 import { useCollaborativeLists } from '../lib/CollaborativeListsContext'
@@ -65,6 +66,7 @@ import * as Haptics from 'expo-haptics'
 import * as Clipboard from 'expo-clipboard'
 import { Share } from 'react-native'
 import { logger } from '../lib/Logger'
+import { useToast } from '../lib/ToastContext'
 
 const { width } = Dimensions.get('window')
 
@@ -216,8 +218,9 @@ const LIST_DATA: Record<string, ListData> = {
 export default function ListDetailScreen() {
   const router = useRouter()
   const { id } = useLocalSearchParams()
-  const { lists, updateListItem, toggleItemCompletion, addItemToList, deleteItemFromList } = useListsUnified()
+  const { lists, refreshLists, updateListItem, toggleItemCompletion, addItemToList, deleteItemFromList } = useListsUnified()
   const { inviteCollaborator, getListActivity, getListCollaborators, ensureSubscription } = useCollaborativeLists()
+  const { showToast } = useToast()
   const [showAddItemModal, setShowAddItemModal] = useState(false)
   const [showEditItemModal, setShowEditItemModal] = useState(false)
   const [showShareModal, setShowShareModal] = useState(false)
@@ -241,6 +244,7 @@ export default function ListDetailScreen() {
   const [showUnitPicker, setShowUnitPicker] = useState(false)
   const quantityInputRef = useRef<any>(null)
   const editQuantityInputRef = useRef<any>(null)
+  const knownCategoriesRef = useRef<Set<string>>(new Set())
 
   // Load activities when component mounts
   useEffect(() => {
@@ -252,10 +256,18 @@ export default function ListDetailScreen() {
   // Ensure real-time subscription is active when viewing this list
   useEffect(() => {
     if (id) {
-      // Ensure subscription is active for this list
       ensureSubscription(id as string)
     }
   }, [id, ensureSubscription])
+
+  // When screen gains focus (e.g. user tapped "item added to list" notification), refresh lists so new item shows immediately
+  useFocusEffect(
+    React.useCallback(() => {
+      if (id && typeof refreshLists === 'function') {
+        refreshLists()
+      }
+    }, [id, refreshLists])
+  )
 
   const loadActivities = async () => {
     if (!id) return
@@ -505,11 +517,7 @@ export default function ListDetailScreen() {
         notes: editNotes
       })
       
-      Alert.alert(
-        'Item Updated',
-        `"${selectedItem.name}" has been updated\nQuantity: ${finalQuantity}\nNotes: ${editNotes || 'None'}`,
-        [{ text: 'OK' }]
-      )
+      showToast(`Updated "${selectedItem.name}".`, { kind: 'success' })
       setShowEditItemModal(false)
       setSelectedItem(null)
       setEditQuantity('')
@@ -519,7 +527,7 @@ export default function ListDetailScreen() {
 
   const handleAddItem = () => {
     if (!newItemName.trim()) {
-      Alert.alert('Error', 'Please enter an item name')
+      showToast('Please enter an item name.', { kind: 'warning' })
       return
     }
     
@@ -537,6 +545,13 @@ export default function ListDetailScreen() {
       quantity: newItemQuantity.trim() || '1',
       notes: newItemNotes.trim()
     })
+
+    // Ensure the category is expanded so the new item is visible instantly
+    setCollapsedCategories(prev => {
+      const next = new Set(prev)
+      next.delete(autoCategory)
+      return next
+    })
     
     // Reset form
     setNewItemName('')
@@ -544,7 +559,7 @@ export default function ListDetailScreen() {
     setNewItemNotes('')
     setShowAddItemModal(false)
     
-    Alert.alert('Added!', `${newItemName} added to ${autoCategory}`)
+    showToast(`Added "${newItemName}" to ${autoCategory}.`, { kind: 'success' })
   }
 
   const handleCollaboratorPress = (collaborator: Collaborator) => {
@@ -554,7 +569,7 @@ export default function ListDetailScreen() {
 
   const handleGenerateShareCode = async () => {
     if (!id) {
-      Alert.alert('Error', 'List ID not found.')
+      showToast('List ID not found.', { kind: 'error', durationMs: 3500 })
       return
     }
 
@@ -568,7 +583,7 @@ export default function ListDetailScreen() {
         logger.error('Error generating share code', { error, listId: id })
         // Extract the actual error message
         const errorMessage = error instanceof Error ? error.message : (error?.message || 'Failed to generate share code. Please try again.')
-        Alert.alert('Error', errorMessage)
+        showToast(errorMessage, { kind: 'error', durationMs: 4000 })
         return
       }
 
@@ -583,13 +598,13 @@ export default function ListDetailScreen() {
         setShowInviteModal(false)
         setShowShareCodeModal(true)
       } else {
-        Alert.alert('Error', 'Share code was generated but not returned. Please try again.')
+        showToast('Share code was generated but not returned. Please try again.', { kind: 'error', durationMs: 4000 })
       }
     } catch (error) {
       logger.error('Error generating share code', { error, listId: id })
       // Extract the actual error message
       const errorMessage = error instanceof Error ? error.message : 'Failed to generate share code. Please try again.'
-      Alert.alert('Error', errorMessage)
+      showToast(errorMessage, { kind: 'error', durationMs: 4000 })
     }
   }
 
@@ -598,7 +613,7 @@ export default function ListDetailScreen() {
     const shareCode = generatedShareCode || currentList?.shareCode || (listData as any)?.shareCode
     
     if (!shareCode) {
-      Alert.alert('Error', 'No share code available. Please generate one first.')
+      showToast('No share code available. Generate one first.', { kind: 'warning' })
       return
     }
     
@@ -612,7 +627,7 @@ export default function ListDetailScreen() {
       })
     } catch (error) {
       logger.error('Error sharing code', { error })
-      Alert.alert('Error', 'Failed to share code.')
+      showToast('Failed to share code.', { kind: 'error', durationMs: 3500 })
     }
   }
   
@@ -689,20 +704,50 @@ export default function ListDetailScreen() {
     return [...knownCategories, ...otherCategories]
   }
 
-  // Auto-collapse all categories when list loads or items change
+  // Auto-collapse all categories when the list changes
   useEffect(() => {
-    if (listData && listData.items && listData.items.length > 0) {
-      // Get all unique categories from items
-      const categories = new Set<string>()
-      listData.items.forEach((item: ListItem) => {
-        const category = item.category || 'Groceries'
-        categories.add(category)
+    if (!listData) return
+
+    const categories = new Set<string>()
+    listData.items.forEach((item: ListItem) => {
+      const category = item.category || 'Groceries'
+      categories.add(category)
+    })
+
+    // On list switch, collapse everything by default
+    knownCategoriesRef.current = categories
+    setCollapsedCategories(new Set(categories))
+  }, [listData?.id])
+
+  // When items update, collapse only newly introduced categories
+  // Keep user-opened categories open so new items stay visible
+  useEffect(() => {
+    if (!listData) return
+
+    const categories = new Set<string>()
+    listData.items.forEach((item: ListItem) => {
+      const category = item.category || 'Groceries'
+      categories.add(category)
+    })
+
+    const previous = knownCategoriesRef.current
+    const newlyAdded: string[] = []
+    categories.forEach(category => {
+      if (!previous.has(category)) {
+        newlyAdded.push(category)
+      }
+    })
+
+    if (newlyAdded.length > 0) {
+      setCollapsedCategories(prev => {
+        const next = new Set(prev)
+        newlyAdded.forEach(category => next.add(category))
+        return next
       })
-      
-      // Collapse all categories by default (add all to collapsed Set)
-      setCollapsedCategories(new Set(categories))
     }
-  }, [listData?.id, listData?.items?.length]) // Re-collapse when list ID or item count changes
+
+    knownCategoriesRef.current = categories
+  }, [listData?.items?.length])
 
   const toggleCategory = (category: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
@@ -830,15 +875,15 @@ export default function ListDetailScreen() {
                       try {
                         const codeToCopy = getDisplayShareCode()
                         if (!codeToCopy) {
-                          Alert.alert('Error', 'No share code available to copy.')
+                          showToast('No share code available to copy.', { kind: 'warning' })
                           return
                         }
                         await Clipboard.setStringAsync(codeToCopy)
                         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-                        Alert.alert('Copied!', 'Share code copied to clipboard')
+                        showToast('Share code copied.', { kind: 'success' })
                       } catch (error) {
                         logger.error('Error copying to clipboard', { error })
-                        Alert.alert('Error', 'Failed to copy share code')
+                        showToast('Failed to copy share code.', { kind: 'error', durationMs: 3500 })
                       }
                     }}
                   >
@@ -1225,13 +1270,79 @@ export default function ListDetailScreen() {
 
             <View style={{ height: 40 }} />
             </ScrollView>
+
+            {/* Unit Picker - Rendered inside Add Item Modal to appear immediately */}
+            {showUnitPicker && showAddItemModal && (
+              <View style={styles.unitPickerOverlayInside}>
+                <Pressable 
+                  style={styles.unitPickerOverlayBackdrop}
+                  onPress={() => setShowUnitPicker(false)}
+                >
+                  <Pressable 
+                    style={styles.unitPickerContent}
+                    onPress={(e) => e.stopPropagation()}
+                  >
+                    <View style={styles.unitPickerHeader}>
+                      <Text style={styles.unitPickerTitle}>Select Unit</Text>
+                      <Pressable 
+                        onPress={() => setShowUnitPicker(false)}
+                        style={styles.unitPickerCloseButton}
+                      >
+                        <Ionicons name="close" size={24} color="#1C1C1E" />
+                      </Pressable>
+                    </View>
+                    
+                    <ScrollView 
+                      style={styles.unitPickerScroll}
+                      showsVerticalScrollIndicator={false}
+                    >
+                      <View style={styles.unitPickerList}>
+                        {AVAILABLE_UNITS.map((unit) => {
+                          const currentQuantity = newItemQuantity
+                          const currentName = newItemName || 'item'
+                          const currentUnit = currentQuantity.split(' ').slice(1).join(' ') || getAutoUnit(currentName)
+                          const isSelected = unit === currentUnit
+                          
+                          return (
+                            <Pressable
+                              key={unit}
+                              style={[
+                                styles.unitPickerRow,
+                                isSelected && styles.unitPickerRowSelected
+                              ]}
+                              onPress={() => {
+                                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+                                const quantityNumber = currentQuantity.split(' ')[0] || '1'
+                                const newQuantity = `${quantityNumber} ${unit}`
+                                setShowUnitPicker(false)
+                                setNewItemQuantity(newQuantity)
+                              }}
+                            >
+                              <Text style={styles.unitPickerRowText}>{unit}</Text>
+                              {isSelected ? (
+                                <Ionicons name="checkmark" size={20} color="#6A9571" />
+                              ) : (
+                                <View style={{ width: 20, height: 20 }} />
+                              )}
+                            </Pressable>
+                          )
+                        })}
+                      </View>
+                    </ScrollView>
+                  </Pressable>
+                </Pressable>
+              </View>
+            )}
           </KeyboardAvoidingView>
         </View>
       </Modal>
 
-      {/* Unit Picker Modal */}
+      {/* Unit Picker Modal (fallback only) */}
+      {/* iOS can delay presenting a second Modal over a full-screen Modal.
+          We render the picker INSIDE the Add/Edit modals (see below) and only
+          use this fallback when neither modal is open. */}
       <Modal
-        visible={showUnitPicker}
+        visible={showUnitPicker && !showAddItemModal && !showEditItemModal}
         transparent={true}
         animationType="slide"
         onRequestClose={() => setShowUnitPicker(false)}
@@ -1258,12 +1369,10 @@ export default function ListDetailScreen() {
               style={styles.unitPickerScroll}
               showsVerticalScrollIndicator={false}
             >
-              <View style={styles.unitPickerGrid}>
+                      <View style={styles.unitPickerList}>
                 {AVAILABLE_UNITS.map((unit) => {
-                  // Determine which modal is active and get current unit
-                  const isEditMode = showEditItemModal && selectedItem
-                  const currentQuantity = isEditMode ? editQuantity : newItemQuantity
-                  const currentName = isEditMode ? selectedItem?.name || 'item' : newItemName || 'item'
+                  const currentQuantity = newItemQuantity
+                  const currentName = newItemName || 'item'
                   const currentUnit = currentQuantity.split(' ').slice(1).join(' ') || getAutoUnit(currentName)
                   const isSelected = unit === currentUnit
                   
@@ -1271,35 +1380,23 @@ export default function ListDetailScreen() {
                     <Pressable
                       key={unit}
                       style={[
-                        styles.unitPickerItem,
-                        isSelected && styles.unitPickerItemSelected
+                                styles.unitPickerRow,
+                                isSelected && styles.unitPickerRowSelected
                       ]}
                       onPress={() => {
                         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
                         const quantityNumber = currentQuantity.split(' ')[0] || '1'
                         const newQuantity = `${quantityNumber} ${unit}`
-                        
-                        // Close modal FIRST to ensure immediate visual feedback
                         setShowUnitPicker(false)
-                        
-                        // Then update state - this ensures modal closes immediately
-                        // and unit appears right away
-                        if (isEditMode) {
-                          setEditQuantity(newQuantity)
-                        } else {
-                          setNewItemQuantity(newQuantity)
-                        }
+                        setNewItemQuantity(newQuantity)
                       }}
                     >
-                      <Text style={[
-                        styles.unitPickerItemText,
-                        isSelected && styles.unitPickerItemTextSelected
-                      ]}>
-                        {unit}
-                      </Text>
-                      {isSelected && (
-                        <Ionicons name="checkmark-circle" size={20} color="#6A9571" />
-                      )}
+                              <Text style={styles.unitPickerRowText}>{unit}</Text>
+                              {isSelected ? (
+                                <Ionicons name="checkmark" size={20} color="#6A9571" />
+                              ) : (
+                                <View style={{ width: 20, height: 20 }} />
+                              )}
                     </Pressable>
                   )
                 })}
@@ -1500,7 +1597,7 @@ export default function ListDetailScreen() {
                       style={styles.unitPickerScroll}
                       showsVerticalScrollIndicator={false}
                     >
-                      <View style={styles.unitPickerGrid}>
+                      <View style={styles.unitPickerList}>
                         {AVAILABLE_UNITS.map((unit) => {
                           // For edit mode, use editQuantity
                           const currentQuantity = editQuantity
@@ -1512,8 +1609,8 @@ export default function ListDetailScreen() {
                             <Pressable
                               key={unit}
                               style={[
-                                styles.unitPickerItem,
-                                isSelected && styles.unitPickerItemSelected
+                                styles.unitPickerRow,
+                                isSelected && styles.unitPickerRowSelected
                               ]}
                               onPress={() => {
                                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
@@ -1528,14 +1625,11 @@ export default function ListDetailScreen() {
                                 setEditQuantity(newQuantity)
                               }}
                             >
-                              <Text style={[
-                                styles.unitPickerItemText,
-                                isSelected && styles.unitPickerItemTextSelected
-                              ]}>
-                                {unit}
-                              </Text>
-                              {isSelected && (
-                                <Ionicons name="checkmark-circle" size={20} color="#6A9571" />
+                              <Text style={styles.unitPickerRowText}>{unit}</Text>
+                              {isSelected ? (
+                                <Ionicons name="checkmark" size={20} color="#6A9571" />
+                              ) : (
+                                <View style={{ width: 20, height: 20 }} />
                               )}
                             </Pressable>
                           )
@@ -1706,15 +1800,15 @@ export default function ListDetailScreen() {
                       try {
                         const codeToCopy = getDisplayShareCode()
                         if (!codeToCopy) {
-                          Alert.alert('Error', 'No share code available to copy.')
+                          showToast('No share code available to copy.', { kind: 'warning' })
                           return
                         }
                         await Clipboard.setStringAsync(codeToCopy)
                         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-                        Alert.alert('Copied!', 'Share code copied to clipboard')
+                        showToast('Share code copied.', { kind: 'success' })
                       } catch (error) {
                         logger.error('Error copying to clipboard', { error })
-                        Alert.alert('Error', 'Failed to copy share code')
+                        showToast('Failed to copy share code.', { kind: 'error', durationMs: 3500 })
                       }
                     }}
                   >
@@ -2862,6 +2956,26 @@ const styles = StyleSheet.create({
   },
   unitPickerScroll: {
     maxHeight: 400,
+  },
+  unitPickerList: {
+    paddingVertical: 8,
+  },
+  unitPickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0, 0, 0, 0.06)',
+  },
+  unitPickerRowSelected: {
+    backgroundColor: 'rgba(106, 149, 113, 0.08)',
+  },
+  unitPickerRowText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1C1C1E',
   },
   unitPickerGrid: {
     flexDirection: 'row',

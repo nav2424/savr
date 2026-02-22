@@ -2,6 +2,7 @@
 import { supabase, List, ListItem, Collaborator, Activity } from './supabase'
 import { RealtimeChannel } from '@supabase/supabase-js'
 import { notificationsService, formatListNotification } from './NotificationsService'
+import { logger } from './Logger'
 
 class CollaborativeListsService {
   private subscriptions: Map<string, RealtimeChannel> = new Map()
@@ -229,9 +230,7 @@ class CollaborativeListsService {
         trimmed.replace(/\s+/g, ''), // No spaces, original case
       ].filter((v, i, arr) => v && arr.indexOf(v) === i)
 
-      console.log('🔍 Joining list with share code:', shareCode)
-      console.log('🔍 Normalized to:', normalized)
-      console.log('🔍 Trying candidates:', candidates)
+      logger.debug('Joining list with share code', { shareCode, normalized, candidatesCount: candidates.length })
 
       let listRow: any = null
       let rpcError: any = null
@@ -239,12 +238,13 @@ class CollaborativeListsService {
       // Method 1: Try RPC function (bypasses RLS)
       for (const candidate of candidates) {
         try {
-          console.log(`🔍 Attempting RPC call with: "${candidate}"`)
+          logger.debug('Attempting RPC call', { candidate })
           const { data, error } = await supabase
             .rpc('get_list_by_share_code', { p_share_code: candidate })
           
-          console.log(`📊 RPC response for "${candidate}":`, { 
-            hasData: !!data, 
+          logger.debug('RPC response', { 
+            candidate,
+            hasData: !!data,
             dataType: Array.isArray(data) ? 'array' : typeof data,
             dataLength: Array.isArray(data) ? data.length : 'N/A',
             hasError: !!error,
@@ -253,12 +253,7 @@ class CollaborativeListsService {
           
           if (error) {
             rpcError = error
-            console.log(`❌ RPC error for "${candidate}":`, {
-              message: error.message,
-              code: error.code,
-              details: error.details,
-              hint: error.hint
-            })
+            logger.warn('RPC error', { candidate, message: error.message, code: error.code, details: error.details, hint: error.hint })
             // Continue trying other variants
             continue
           }
@@ -267,27 +262,27 @@ class CollaborativeListsService {
             // Handle both array and single result
             if (Array.isArray(data) && data.length > 0) {
               listRow = data[0]
-              console.log('✅ Found list via RPC (array):', listRow.name)
+              logger.info('Found list via RPC (array)', { name: listRow.name })
               break
             } else if (!Array.isArray(data) && data) {
               listRow = data
-              console.log('✅ Found list via RPC (single):', listRow.name)
+              logger.info('Found list via RPC (single)', { name: listRow.name })
               break
             } else if (Array.isArray(data) && data.length === 0) {
-              console.log(`⚠️ RPC returned empty array for "${candidate}"`)
+              logger.debug('RPC returned empty array', { candidate })
             }
           } else {
-            console.log(`⚠️ RPC returned null/undefined for "${candidate}"`)
+            logger.debug('RPC returned null/undefined', { candidate })
           }
         } catch (err) {
-          console.log(`❌ RPC exception for "${candidate}":`, err)
+          logger.warn('RPC exception', { candidate, err })
           rpcError = err
         }
       }
 
       // Method 2: Direct query with case-insensitive search (may be blocked by RLS)
       if (!listRow) {
-        console.log('🔄 RPC didn\'t find list, trying direct query as backup...')
+        logger.debug('RPC did not find list, trying direct query backup')
         for (const candidate of candidates) {
           try {
             const { data: directData, error: directError } = await supabase
@@ -297,34 +292,34 @@ class CollaborativeListsService {
               .maybeSingle()
             
             if (directError) {
-              console.log(`❌ Direct query error for "${candidate}":`, directError.message)
+              logger.warn('Direct query error', { candidate, message: directError.message })
               // RLS might be blocking - that's okay, we'll rely on RPC
               continue
             }
             
             if (directData) {
               listRow = directData
-              console.log('✅ Found list via direct query:', listRow.name)
+              logger.info('Found list via direct query', { name: listRow.name })
               break
             }
           } catch (err) {
-            console.log(`❌ Direct query exception for "${candidate}":`, err)
+            logger.warn('Direct query exception', { candidate, err })
           }
         }
       }
 
       // Debug: Show what we found
       if (listRow) {
-        console.log('✅ Successfully found list:', {
+        logger.info('Successfully found list', {
           id: listRow.id,
           name: listRow.name,
           share_code: listRow.share_code,
           owner_id: listRow.owner_id
         })
       } else {
-        console.log('❌ List not found after trying all methods')
+        logger.warn('List not found after trying all methods', { shareCode })
         if (rpcError) {
-          console.error('RPC error details:', rpcError)
+          logger.error('RPC error details', { rpcError })
         }
         
         // Debug: Check what lists exist (may be limited by RLS)
@@ -335,12 +330,12 @@ class CollaborativeListsService {
             .limit(10)
           
           if (debugError) {
-            console.log('⚠️ Could not fetch debug list (RLS may be blocking):', debugError.message)
+            logger.debug('Could not fetch debug list (RLS may be blocking)', { message: debugError.message })
           } else {
-            console.log('📋 Available lists (may be filtered by RLS):', allLists)
+            logger.debug('Available lists (may be filtered by RLS)', { count: Array.isArray(allLists) ? allLists.length : 0 })
           }
         } catch (err) {
-          console.log('⚠️ Debug query failed:', err)
+          logger.debug('Debug query failed', { err })
         }
         
         return { 
@@ -465,9 +460,19 @@ class CollaborativeListsService {
         .select()
         .single()
 
-      // Send push notification only if user is NOT the owner
-      // If owner adds item, no notification. If collaborator adds, notify owner and other collaborators
       if (data) {
+        // Broadcast immediate add to all subscribed clients (fallback if realtime is slow)
+        const channel = this.subscriptions.get(listId)
+        if (channel) {
+          channel.send({
+            type: 'broadcast',
+            event: 'list_item_added',
+            payload: data
+          }).catch((broadcastError) => {
+            console.warn('⚠️ Failed to broadcast list item add', { listId, error: broadcastError })
+          })
+        }
+
         const { data: listData } = await supabase
           .from('lists')
           .select('name, owner_id')
@@ -475,31 +480,27 @@ class CollaborativeListsService {
           .single()
 
         if (listData) {
-          // Only send notification if the person adding is NOT the owner
-          const isOwner = listData.owner_id === userData.user.id
+          // Always notify all collaborators (including owner) except the user who added the item.
+          // Per-user notification preferences (including listUpdates) are enforced inside NotificationsService.
+          const notification = formatListNotification(
+            'added',
+            userProfile?.name || 'Someone',
+            item.name,
+            listData.name
+          )
           
-          if (!isOwner) {
-            const notification = formatListNotification(
-              'added',
-              userProfile?.name || 'Someone',
-              item.name,
-              listData.name
-            )
-            
-            // Notify owner and all other collaborators (excluding current user)
-            await notificationsService.notifyListCollaborators(
+          await notificationsService.notifyListCollaborators(
+            listId,
+            notification.title,
+            notification.body,
+            {
+              type: 'item_added',
               listId,
-              notification.title,
-              notification.body,
-              {
-                type: 'item_added',
-                listId,
-                listName: listData.name,
-                itemName: item.name,
-                screen: `/list-detail?id=${listId}`
-              }
-            )
-          }
+              listName: listData.name,
+              itemName: item.name,
+              screen: `/list-detail?id=${listId}`
+            }
+          )
         }
       }
 
@@ -815,6 +816,39 @@ class CollaborativeListsService {
   }) {
     const channel = supabase
       .channel(`list:${listId}`)
+      .on(
+        'broadcast',
+        { event: 'list_item_added' },
+        (payload) => {
+          const item = payload?.payload as ListItem | undefined
+          if (item && callbacks.onItemAdded) {
+            console.log(`📣 Broadcast item added received for list ${listId}:`, item)
+            callbacks.onItemAdded(item)
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'list_item_updated' },
+        (payload) => {
+          const item = payload?.payload as ListItem | undefined
+          if (item && callbacks.onItemUpdated) {
+            console.log(`📣 Broadcast item updated received for list ${listId}:`, item)
+            callbacks.onItemUpdated(item)
+          }
+        }
+      )
+      .on(
+        'broadcast',
+        { event: 'list_item_deleted' },
+        (payload) => {
+          const itemId = payload?.payload?.id as string | undefined
+          if (itemId && callbacks.onItemDeleted) {
+            console.log(`📣 Broadcast item deleted received for list ${listId}:`, itemId)
+            callbacks.onItemDeleted(itemId)
+          }
+        }
+      )
       .on(
         'postgres_changes',
         {

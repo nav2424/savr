@@ -1,20 +1,42 @@
 // Supabase Client Configuration
-import { createClient } from '@supabase/supabase-js'
+import { createClient, SupabaseClient } from '@supabase/supabase-js'
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import config from '../config'
 
-// Get credentials from config or environment
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || ''
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || ''
+let supabaseClient: SupabaseClient | null = null
 
-// Create Supabase client with AsyncStorage for session persistence
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    storage: AsyncStorage,
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: false,
+const getSupabaseClient = (): SupabaseClient => {
+  if (supabaseClient) return supabaseClient
+
+  const supabaseUrl = config.supabaseUrl || ''
+  const supabaseAnonKey = config.supabaseAnonKey || ''
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    const errorMessage = 'Supabase configuration is missing. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in EAS environment variables.'
+    console.error('⚠️', errorMessage)
+    // Throw error but with better message - ErrorBoundary will catch it
+    throw new Error(errorMessage)
+  }
+
+  supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      storage: AsyncStorage,
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: false,
+    },
+  })
+
+  return supabaseClient
+}
+
+// Lazy proxy so config can hydrate before client is created
+export const supabase = new Proxy({} as SupabaseClient, {
+  get(_target, prop) {
+    const client = getSupabaseClient() as any
+    return client[prop]
   },
-})
+}) as SupabaseClient
 
 // Database types
 export interface User {
@@ -79,9 +101,31 @@ export interface Activity {
   created_at: string
 }
 
+export interface Household {
+  id: string
+  name: string
+  owner_id: string
+  share_code: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface HouseholdMember {
+  id: string
+  household_id: string
+  user_id: string
+  role: 'owner' | 'editor' | 'viewer'
+  added_by: string | null
+  added_at: string
+  accepted: boolean
+  user?: User
+}
+
 export interface PantryItem {
   id: string
   user_id: string
+  household_id?: string | null
+  added_by?: string | null
   name: string
   icon: string
   category: string

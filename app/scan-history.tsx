@@ -207,7 +207,17 @@ export default function ScanHistoryScreen() {
                     <Pressable
                       key={item.id}
                       style={styles.historyItem}
-                      onPress={() => router.push('/scan')}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+                        router.push({
+                          pathname: '/scan-detail',
+                          params: {
+                            barcode: item.barcode,
+                            product_name: item.product_name,
+                            scanned_at: item.scanned_at,
+                          },
+                        })
+                      }}
                     >
                       <View style={styles.historyContent}>
                         <Text style={styles.historyName} numberOfLines={1}>

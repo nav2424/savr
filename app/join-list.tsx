@@ -6,7 +6,6 @@ import {
   StyleSheet,
   TextInput,
   Pressable,
-  Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
@@ -15,6 +14,7 @@ import { LinearGradient } from 'expo-linear-gradient'
 import { useRouter } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import * as Haptics from 'expo-haptics'
+import { useToast } from '../lib/ToastContext'
 
 // Try to use collaborative lists
 function useListsContext() {
@@ -29,17 +29,18 @@ function useListsContext() {
 export default function JoinListScreen() {
   const router = useRouter()
   const lists = useListsContext()
+  const { showToast } = useToast()
   const [shareCode, setShareCode] = useState('')
   const [loading, setLoading] = useState(false)
 
   const handleJoinList = async () => {
     if (!shareCode.trim()) {
-      Alert.alert('Error', 'Please enter a share code')
+      showToast('Please enter a share code.', { kind: 'warning' })
       return
     }
 
     if (!lists || !lists.joinListByCode) {
-      Alert.alert('Error', 'You need to sign in to join collaborative lists')
+      showToast('You need to sign in to join collaborative lists.', { kind: 'warning' })
       return
     }
 
@@ -50,21 +51,13 @@ export default function JoinListScreen() {
       const result = await lists.joinListByCode(shareCode.trim().toUpperCase())
 
       if (result.success) {
-        Alert.alert(
-          'Success!',
-          'You\'ve joined the list! Check your Lists tab.',
-          [
-            {
-              text: 'OK',
-              onPress: () => router.back()
-            }
-          ]
-        )
+        showToast("You've joined the list! Check your Lists tab.", { kind: 'success' })
+        router.back()
       } else {
-        Alert.alert('Error', result.error || 'Failed to join list')
+        showToast(result.error || 'Failed to join list.', { kind: 'error', durationMs: 3500 })
       }
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Something went wrong')
+      showToast(error?.message || 'Something went wrong.', { kind: 'error', durationMs: 3500 })
     } finally {
       setLoading(false)
     }

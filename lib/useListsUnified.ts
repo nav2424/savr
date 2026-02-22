@@ -30,8 +30,26 @@ export function useListsUnified() {
         joinListByCode: collabLists.joinListByCode,
       }
     } catch (error) {
-      // Fallback to local lists if collaborative provider not available
-      console.warn('Collaborative lists not available, using local lists')
+      // Fallback when collaborative provider not in tree (e.g. modal in different root)
+      console.warn('Collaborative lists not available, using empty fallback', error)
+      return {
+        lists: [],
+        loading: false,
+        listsLoadError: null,
+        refreshLists: async () => {},
+        addList: async () => {},
+        deleteList: async () => {},
+        addItemToList: async () => {},
+        deleteItemFromList: async () => {},
+        updateListItem: async () => {},
+        toggleItemCompletion: async () => {},
+        joinListByCode: async () => ({ success: false, error: 'Not available' }),
+        getListCollaborators: async () => [],
+        getListActivity: async () => [],
+        inviteCollaborator: async () => ({ success: false, error: 'Not available' }),
+        removeCollaborator: async () => {},
+        ensureSubscription: () => {},
+      }
     }
   }
   
@@ -67,7 +85,10 @@ export function useListsUnified() {
     return {
       ...localLists,
       addList,
-      deleteItemFromList: async () => {}, // Placeholder for local lists
+      deleteItemFromList: async () => {},
+      refreshLists: async () => {},
+      loading: false,
+      listsLoadError: null,
     }
   } catch (error) {
     // Return empty state if no provider available
@@ -75,6 +96,8 @@ export function useListsUnified() {
     return {
       lists: [],
       loading: false,
+      listsLoadError: null,
+      refreshLists: async () => {},
       addList: () => {},
       deleteList: async () => {},
       addItemToList: async () => {},

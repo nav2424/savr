@@ -8,9 +8,10 @@ import {
   ScrollView,
   Pressable,
   Animated,
-  StatusBar,
   Dimensions,
+  StatusBar,
   RefreshControl,
+  Platform,
 } from 'react-native'
 import { Image } from 'expo-image'
 // RECIPES TEMPORARILY DISABLED FOR LAUNCH
@@ -23,6 +24,7 @@ import { dataManager } from '../../lib/dataManager'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { useListsUnified } from '../../lib/useListsUnified'
 import { usePantry } from '../../lib/PantryContext'
+import { useHousehold } from '../../lib/HouseholdContext'
 import { useReceipts } from '../../lib/ReceiptsContext'
 import { expiryPredictionService } from '../../lib/ExpiryPredictionService'
 import { capitalizeCategoryName } from '../../lib/ScanningService'
@@ -44,16 +46,16 @@ import { PremiumCard, PremiumButton, PremiumSectionHeader, PremiumBadge, Premium
 import { LiquidGlassCard, LiquidGlassButton, LiquidGlassIcon } from '../../components/LiquidGlassCard'
 import { iOS26Tokens } from '../../lib/DesignSystem'
 import { logger } from '../../lib/Logger'
-import { 
-  scaleSize, 
-  scaleFont, 
-  scaleWidth, 
-  scaleHeight, 
-  responsivePadding, 
-  responsiveFonts, 
+import {
+  scaleSize,
+  scaleFont,
+  scaleWidth,
+  scaleHeight,
+  responsivePadding,
+  responsiveFonts,
   responsiveSpacing,
   getResponsiveDimensions,
-  getDebugInfo 
+  getDebugInfo,
 } from '../../lib/responsive'
 
 const { width } = Dimensions.get('window')
@@ -70,9 +72,12 @@ export default function DashboardScreen() {
 
   const { lists } = useListsUnified()
   const { items: pantryItems, getExpiringItems } = usePantry()
+  const { currentHousehold } = useHousehold()
+  const hasNoPantryItems = !pantryItems || pantryItems.length === 0
+  const showJoinPantryAction = hasNoPantryItems && !currentHousehold
   // RECIPES TEMPORARILY DISABLED FOR LAUNCH
   // const { recipes, calculateIngredientMatch, getSuggestedRecipes, regenerateAIRecipes } = useRecipesContext()
-  const { getMonthlyTotal, receipts } = useReceipts()
+  const { getMonthlyTotal, receipts, loading: receiptsLoading } = useReceipts()
 
   // Calculate items expiring within 7 days
   const getItemsExpiringSoon = () => {
@@ -98,12 +103,6 @@ export default function DashboardScreen() {
     itemsLowStock: 12,
     // recipesCooked: 0, // RECIPES DISABLED
     itemsScanned: 156
-  })
-  const [budgetData, setBudgetData] = useState({
-    monthlyGoal: 0,
-    spent: 0,
-    remaining: 0,
-    progress: 0
   })
   const [refreshKey, setRefreshKey] = useState(0)
   const [userAllergies, setUserAllergies] = useState<string[]>([])
@@ -143,19 +142,25 @@ export default function DashboardScreen() {
   const parallaxAnim = useRef(new Animated.Value(0)).current
   const glowAnim = useRef(new Animated.Value(0)).current
 
-  // Simple personalized greeting
+  // Simple personalized greeting (preferences first, then profile name, then email fallback).
+  // Use safe string coercion to avoid throws from malformed user data (e.g. name as object).
   const getPersonalizedGreeting = () => {
     const hour = new Date().getHours()
+    const safeStr = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
     let firstName = 'there'
-    if (userPreferences?.profile?.firstName && userPreferences.profile.firstName.trim()) {
-      firstName = userPreferences.profile.firstName.trim()
-    } else if (user && 'user_metadata' in user) {
-      const metadata = (user as any).user_metadata
-      if (metadata?.full_name) {
-        firstName = metadata.full_name.trim().split(' ')[0]
+    const prefsFirst = safeStr(userPreferences?.profile?.firstName)
+    if (prefsFirst) {
+      firstName = prefsFirst.split(' ')[0] || 'there'
+    } else {
+      const nameStr = safeStr(user?.name)
+      if (nameStr) {
+        firstName = nameStr.split(' ')[0] || 'there'
+      } else if (user && typeof (user as any).user_metadata?.full_name === 'string') {
+        firstName = (user as any).user_metadata.full_name.trim().split(' ')[0] || 'there'
+      } else if (user?.email && typeof user.email === 'string') {
+        firstName = user.email.split('@')[0] || 'there'
       }
     }
-    
     if (hour < 12) return `Good morning, ${firstName}!`
     if (hour < 17) return `Good afternoon, ${firstName}!`
     return `Good evening, ${firstName}!`
@@ -263,6 +268,11 @@ export default function DashboardScreen() {
       }
     }
 
+    const categoryDisplayNames: Record<string, string> = {
+      'Condiments, Sauces & Spreads': 'Condiments and Sauces',
+      'Plant-Based Proteins & Legumes': 'Proteins and Legumes',
+    }
+
     // Get unique normalized categories from actual pantry items
     const categoryCounts: Record<string, number> = {}
     
@@ -303,6 +313,7 @@ export default function DashboardScreen() {
 
         return {
           name: categoryName,
+          displayName: categoryDisplayNames[categoryName] ?? categoryName,
           icon: metadata.icon,
           count,
           color: metadata.color,
@@ -328,46 +339,13 @@ export default function DashboardScreen() {
     { name: 'John', avatar: 'J', isOnline: false }
   ]
 
-  // Load budget data
-  const loadBudgetData = async (preferences: any) => {
-    try {
-      // Get monthly budget goal from user preferences
-      const monthlyGoal = preferences?.budget?.monthly || 0
-      
-      // Get current month's spending from receipts
-      const spent = getMonthlyTotal()
-      
-      // Calculate remaining budget
-      const remaining = monthlyGoal > 0 ? Math.max(0, monthlyGoal - spent) : 0
-      
-      // Calculate progress percentage
-      const progress = monthlyGoal > 0 ? Math.min(100, (spent / monthlyGoal) * 100) : 0
-      
-      setBudgetData({
-          monthlyGoal,
-          spent,
-          remaining,
-        progress
-      })
-      
-      logger.debug('Dashboard budget updated', { spent, monthlyGoal })
-    } catch (error) {
-      logger.error('Error loading budget data', { error })
-    }
-  }
-
-  // Refresh user preferences
+  // Refresh user preferences (budget is derived from monthlySpent + userPreferences)
   const refreshUserPreferences = async () => {
     if (user?.id) {
       try {
         const preferences = await userPreferencesService.loadPreferences(user.id)
         setUserPreferences(preferences)
         logger.debug('User preferences refreshed for real-time updates')
-        
-        // Immediately update budget data with new preferences
-        if (preferences) {
-          loadBudgetData(preferences)
-        }
       } catch (error) {
         logger.error('Error refreshing user preferences', { error })
       }
@@ -381,32 +359,19 @@ export default function DashboardScreen() {
     return total
   }, [receipts])
 
-  // Auto-refresh budget when receipts change OR budget preferences change (real-time!)
-  useEffect(() => {
-    if (user?.id && userPreferences) {
-      loadBudgetData(userPreferences)
-    }
-  }, [monthlySpent, userPreferences?.budget?.monthly, refreshKey, user?.id]) // Re-run when monthly total OR budget goal changes
+  // Derive budget from monthlySpent + preferences so home never shows stale 0
+  // Coerce monthly to number (preferences store it as string e.g. "500")
+  const budgetData = useMemo(() => {
+    const raw = userPreferences?.budget?.monthly
+    const monthlyGoal = typeof raw === 'number' ? raw : Number(raw) || 0
+    const spent = Number(monthlySpent) || 0
+    const remaining = monthlyGoal > 0 ? Math.max(0, monthlyGoal - spent) : 0
+    const progress = monthlyGoal > 0 ? Math.min(100, (spent / monthlyGoal) * 100) : 0
+    return { monthlyGoal, spent, remaining, progress }
+  }, [monthlySpent, userPreferences?.budget?.monthly])
 
-  // Also update budget data immediately when monthly spent changes (for real-time sync)
-  useEffect(() => {
-    if (userPreferences) {
-      const monthlyGoal = userPreferences?.budget?.monthly || 0
-      const remaining = monthlyGoal > 0 ? Math.max(0, monthlyGoal - monthlySpent) : 0
-      const progress = monthlyGoal > 0 ? Math.min(100, (monthlySpent / monthlyGoal) * 100) : 0
-      
-      setBudgetData(prev => {
-        const updated = {
-          ...prev,
-          spent: monthlySpent,
-          remaining,
-          progress
-        }
-        logger.debug('Budget updated', { monthlySpent, monthlyGoal, progress })
-        return updated
-      })
-    }
-  }, [monthlySpent, userPreferences?.budget?.monthly]) // Update immediately when spending changes
+  // Show budget loading while receipts load so we never flash $0
+  const showBudgetLoading = receiptsLoading
 
   // RECIPES TEMPORARILY DISABLED FOR LAUNCH
   // Regenerate AI recipes when pantry changes
@@ -506,17 +471,26 @@ export default function DashboardScreen() {
 
   // Refresh preferences when user returns to dashboard (for instant updates)
   // RECIPES TEMPORARILY DISABLED FOR LAUNCH
-  // NOTE: Removed recipe regeneration on focus - recipes are only regenerated when pantry changes
+  // Refresh preferences when dashboard gains focus (e.g. after returning from another screen or after sign-in)
   useFocusEffect(
     useCallback(() => {
       if (user?.id) {
         logger.debug('Dashboard focused - refreshing data for instant updates')
         refreshUserPreferences()
-        setRefreshKey(prev => prev + 1) // Force refresh
-        // RECIPES DISABLED: Recipes are automatically synced via RecipesContext - no need to regenerate on focus
+        setRefreshKey(prev => prev + 1)
       }
     }, [user])
   )
+
+  // Delayed refresh so sign-up/onboarding info appears after applyPendingOnboardingData completes
+  useEffect(() => {
+    if (!user?.id) return
+    refreshUserPreferences()
+    const t = setTimeout(() => {
+      refreshUserPreferences()
+    }, 800)
+    return () => clearTimeout(t)
+  }, [user?.id])
 
   useEffect(() => {
     // Load user preferences and AI data
@@ -544,8 +518,7 @@ export default function DashboardScreen() {
         const trustIndicators = await trustBuildingService.generateTrustIndicators(user.id)
         setTrustIndicators(trustIndicators)
         
-        // Load REAL budget data (will auto-update from ReceiptsContext)
-        await loadBudgetData(preferences)
+        // Budget is derived from receipts + preferences; no separate load needed
         
         // RECIPES TEMPORARILY DISABLED FOR LAUNCH
         // NOTE: Recipe generation is handled automatically by RecipesContext
@@ -686,10 +659,10 @@ export default function DashboardScreen() {
           </View>
         </View>
 
-        {/* ALLERGY SHIELD STATUS BAR */}
+        {/* ALLERGY SHIELD STATUS BAR – light gray card, generous padding */}
         {userAllergies.length > 0 && (
           <View style={styles.allergyShieldContainer}>
-            <LiquidGlassCard variant="ultraThin" borderRadius="md" padding="sm" shadow="liquidGlass" style={styles.allergyShieldCard}>
+            <View style={styles.allergyShieldCard}>
               <Pressable 
                 style={styles.allergyShieldContent}
                 onPress={() => router.push('/(tabs)/allergies')}
@@ -703,9 +676,9 @@ export default function DashboardScreen() {
                     Monitoring {userAllergies.slice(0, 3).join(', ')}{userAllergies.length > 3 ? ` +${userAllergies.length - 3} more` : ''}
                   </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={16} color="#6A9571" />
+                <Ionicons name="chevron-forward" size={16} color="#8E8E93" />
               </Pressable>
-            </LiquidGlassCard>
+            </View>
           </View>
         )}
             
@@ -791,39 +764,78 @@ export default function DashboardScreen() {
                           <Text style={styles.pantryCategoryBadgeText}>{category.count}</Text>
                         </View>
                       </View>
-                      <Text style={styles.pantryCategoryName} numberOfLines={1}>{category.name}</Text>
+                      <Text style={styles.pantryCategoryName} numberOfLines={1}>{category.displayName}</Text>
                     </View>
                   </Pressable>
             ))}
           </ScrollView>
             </View>
 
-        {/* Items Expiring Soon */}
+        {/* Items Expiring Soon – liquid glass + glassmorphism, light red tint */}
         {getItemsExpiringSoon() > 0 && (
           <View style={styles.urgentAlertsSection}>
-            <View style={styles.glassAlertCard}>
-              <LinearGradient
-                colors={['rgba(255, 107, 107, 0.15)', 'rgba(255, 107, 107, 0.08)']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.glassAlertGradient}
-              >
-                <View style={styles.urgentAlertIcon}>
-                  <Text style={styles.urgentAlertEmoji}>⚠️</Text>
+            <View style={styles.expiringSoonGlassOuter}>
+              {Platform.OS === 'ios' ? (
+                <BlurView intensity={48} tint="light" style={styles.expiringSoonGlassBlur}>
+                  <View style={styles.expiringSoonGlassBorder}>
+                    <LinearGradient
+                      colors={[
+                        'rgba(255, 240, 240, 0.72)',
+                        'rgba(255, 218, 218, 0.52)',
+                        'rgba(255, 228, 228, 0.58)',
+                      ]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.expiringSoonGlassGradient}
+                    >
+                      <Pressable
+                        style={[styles.expiringSoonContent, { padding: 0 }]}
+                        onPress={() => router.push('/(tabs)/pantry?filter=expiring')}
+                      >
+                        <View style={styles.urgentAlertIcon}>
+                          <Ionicons name="warning" size={22} color="#FF9500" />
+                        </View>
+                        <View style={styles.urgentAlertContent}>
+                          <Text style={styles.urgentAlertTitle}>Items Expiring Soon</Text>
+                          <Text style={styles.urgentAlertMessage}>
+                            {getItemsExpiringSoon()} item{getItemsExpiringSoon() !== 1 ? 's' : ''} expiring within 7 days
+                          </Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={20} color="#8E8E93" />
+                      </Pressable>
+                    </LinearGradient>
+                  </View>
+                </BlurView>
+              ) : (
+                <View style={styles.expiringSoonGlassBorder}>
+                  <LinearGradient
+                    colors={[
+                      'rgba(255, 240, 240, 0.85)',
+                      'rgba(255, 218, 218, 0.7)',
+                      'rgba(255, 228, 228, 0.75)',
+                    ]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.expiringSoonGlassGradient}
+                  >
+                    <Pressable
+                      style={[styles.expiringSoonContent, { padding: 0 }]}
+                      onPress={() => router.push('/(tabs)/pantry?filter=expiring')}
+                    >
+                      <View style={styles.urgentAlertIcon}>
+                        <Ionicons name="warning" size={22} color="#FF9500" />
+                      </View>
+                      <View style={styles.urgentAlertContent}>
+                        <Text style={styles.urgentAlertTitle}>Items Expiring Soon</Text>
+                        <Text style={styles.urgentAlertMessage}>
+                          {getItemsExpiringSoon()} item{getItemsExpiringSoon() !== 1 ? 's' : ''} expiring within 7 days
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color="#8E8E93" />
+                    </Pressable>
+                  </LinearGradient>
                 </View>
-                <View style={styles.urgentAlertContent}>
-                  <Text style={styles.urgentAlertTitle}>Items Expiring Soon</Text>
-                  <Text style={styles.urgentAlertMessage}>
-                    {getItemsExpiringSoon()} item{getItemsExpiringSoon() !== 1 ? 's' : ''} expiring within 7 days
-                  </Text>
-                </View>
-                <Pressable
-                  style={styles.urgentAlertAction}
-                  onPress={() => router.push('/(tabs)/pantry?filter=expiring')}
-                >
-                  <Ionicons name="chevron-forward" size={20} color="#FF6B6B" />
-                </Pressable>
-              </LinearGradient>
+              )}
             </View>
           </View>
         )}
@@ -844,76 +856,104 @@ export default function DashboardScreen() {
             shadow="liquidGlass"
           >
             <View style={styles.budgetProgressContainer}>
-              <View style={styles.budgetProgressHeader}>
-                <Text style={styles.budgetSpent}>${budgetData.spent.toFixed(0)}</Text>
-                <Text style={styles.budgetGoal}>
-                  {budgetData.monthlyGoal > 0 ? `of $${budgetData.monthlyGoal.toFixed(0)}` : 'spent this month'}
-                </Text>
-              </View>
-              <View style={styles.glassProgressBar}>
-                <LinearGradient
-                  colors={
-                    budgetData.monthlyGoal > 0 
-                      ? (budgetData.progress > 90 ? ['#FF6B6B', '#FF8787'] : ['#51CF66', '#6A9571'])
-                      : ['#6A9571', '#8AB896']
-                  }
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={[
-                    styles.glassProgressFill, 
-                    { 
-                      width: budgetData.monthlyGoal > 0 
-                        ? `${Math.min(budgetData.progress, 100)}%` 
-                        : '100%'
-                    }
-                  ]}
-                />
-              </View>
-              <Text style={styles.budgetRemainingText}>
-                {budgetData.monthlyGoal > 0 ? (
-                  budgetData.remaining > 0 
-                    ? (() => {
-                        // Calculate days remaining in month
-                        const now = new Date()
-                        const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
-                        const dayOfMonth = now.getDate()
-                        const daysRemaining = daysInMonth - dayOfMonth
-                        const dailyAverage = budgetData.spent / dayOfMonth
-                        const projectedSpend = dailyAverage * daysInMonth
-                        
-                        if (projectedSpend > budgetData.monthlyGoal) {
-                          const overspendDate = Math.ceil(budgetData.monthlyGoal / dailyAverage)
-                          return `You'll overspend by the ${overspendDate}${overspendDate === 1 ? 'st' : overspendDate === 2 ? 'nd' : overspendDate === 3 ? 'rd' : 'th'} at this pace`
-                        } else if (budgetData.progress < 50) {
-                          return `You're on track — great job!`
-                        } else {
-                          return `$${budgetData.remaining.toFixed(0)} left this month`
-                        }
-                      })()
-                    : budgetData.remaining < 0 
-                      ? `$${Math.abs(budgetData.remaining).toFixed(0)} over budget`
-                      : 'At budget limit'
-                ) : (
-                  'Set a budget goal to track your spending'
-                )}
-              </Text>
-              {budgetData.monthlyGoal === 0 && (
-                <Pressable 
-                  style={styles.budgetSetupButton}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-                    router.push('/budget-tracking')
-                  }}
-                >
-                  <LinearGradient
-                    colors={['#6A9571', '#5A8561']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.budgetSetupButtonGradient}
-                  >
-                    <Text style={styles.budgetSetupButtonText}>Set Budget Goal</Text>
-                  </LinearGradient>
-                </Pressable>
+              {showBudgetLoading ? (
+                <>
+                  <View style={styles.budgetProgressHeader}>
+                    <View style={styles.budgetSkeletonBar} />
+                    <View style={[styles.budgetSkeletonBar, { width: 80 }]} />
+                  </View>
+                  <View style={styles.glassProgressBar}>
+                    <View style={[styles.glassProgressFill, { width: '40%', backgroundColor: 'rgba(106, 149, 113, 0.4)' }]} />
+                  </View>
+                  <Text style={styles.budgetRemainingText}>Loading your budget…</Text>
+                </>
+              ) : (
+                <>
+                  <View style={styles.budgetProgressHeader}>
+                    <Text style={styles.budgetSpent}>${budgetData.spent.toFixed(0)}</Text>
+                    <Text style={styles.budgetGoal}>
+                      {budgetData.monthlyGoal > 0 ? `of $${budgetData.monthlyGoal.toFixed(0)}` : 'spent this month'}
+                    </Text>
+                  </View>
+                  <View style={styles.glassProgressBar}>
+                    <View
+                      style={[
+                        styles.glassProgressFill,
+                        {
+                          width:
+                            budgetData.monthlyGoal > 0
+                              ? budgetData.progress <= 0
+                                ? '2%'
+                                : `${Math.min(budgetData.progress, 100)}%`
+                              : '100%',
+                          backgroundColor:
+                            budgetData.monthlyGoal > 0 && budgetData.progress <= 0
+                              ? '#9E9E9E'
+                              : undefined,
+                        },
+                      ]}
+                    >
+                      {budgetData.monthlyGoal > 0 && budgetData.progress > 0 && (
+                        <LinearGradient
+                          colors={
+                            budgetData.progress > 90
+                              ? ['#FF6B6B', '#FF8787']
+                              : ['#51CF66', '#6A9571']
+                          }
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 0 }}
+                          style={StyleSheet.absoluteFill}
+                        />
+                      )}
+                    </View>
+                  </View>
+                  <Text style={styles.budgetRemainingText}>
+                    {budgetData.monthlyGoal > 0 ? (
+                      budgetData.remaining > 0 
+                        ? (() => {
+                            // Calculate days remaining in month
+                            const now = new Date()
+                            const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()
+                            const dayOfMonth = now.getDate()
+                            const daysRemaining = daysInMonth - dayOfMonth
+                            const dailyAverage = budgetData.spent / dayOfMonth
+                            const projectedSpend = dailyAverage * daysInMonth
+                            
+                            if (projectedSpend > budgetData.monthlyGoal) {
+                              const overspendDate = Math.ceil(budgetData.monthlyGoal / dailyAverage)
+                              return `You'll overspend by the ${overspendDate}${overspendDate === 1 ? 'st' : overspendDate === 2 ? 'nd' : overspendDate === 3 ? 'rd' : 'th'} at this pace`
+                            } else if (budgetData.progress < 50) {
+                              return `You're on track — great job!`
+                            } else {
+                              return `$${budgetData.remaining.toFixed(0)} left this month`
+                            }
+                          })()
+                        : budgetData.remaining < 0 
+                          ? `$${Math.abs(budgetData.remaining).toFixed(0)} over budget`
+                          : 'At budget limit'
+                    ) : (
+                      'Set a budget goal to track your spending'
+                    )}
+                  </Text>
+                  {budgetData.monthlyGoal === 0 && (
+                    <Pressable 
+                      style={styles.budgetSetupButton}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+                        router.push('/budget-tracking')
+                      }}
+                    >
+                      <LinearGradient
+                        colors={['#6A9571', '#5A8561']}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.budgetSetupButtonGradient}
+                      >
+                        <Text style={styles.budgetSetupButtonText}>Set Budget Goal</Text>
+                      </LinearGradient>
+                    </Pressable>
+                  )}
+                </>
               )}
             </View>
           </LiquidGlassCard>
@@ -1020,14 +1060,18 @@ export default function DashboardScreen() {
                   style={styles.quickActionContent}
                   onPress={() => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-                    router.push('/(tabs)/pantry?openManualAdd=true')
+                    if (showJoinPantryAction) {
+                      router.push('/pantry-household')
+                    } else {
+                      router.push('/(tabs)/pantry?openManualAdd=true')
+                    }
                   }}
                 >
                   <View style={styles.quickActionIcon}>
-                    <Text style={styles.quickActionEmoji}>📦</Text>
+                    <Text style={styles.quickActionEmoji}>{showJoinPantryAction ? '👋' : '📦'}</Text>
                   </View>
-                  <Text style={styles.quickActionTitle}>Add Items</Text>
-                  <Text style={styles.quickActionSubtitle}>Manual entry</Text>
+                  <Text style={styles.quickActionTitle}>{showJoinPantryAction ? 'Join Pantry' : 'Add Items'}</Text>
+                  <Text style={styles.quickActionSubtitle}>{showJoinPantryAction ? 'Use a share code' : 'Manual entry'}</Text>
                 </Pressable>
               </LiquidGlassCard>
             </View>
@@ -1121,26 +1165,26 @@ const styles = StyleSheet.create({
     height: 100,
   },
 
-  // Header
+  // Header – match Allergies tab exactly (position and size of SAVR logo)
   cleanHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'flex-start',
-    paddingHorizontal: 24,
-    paddingTop: 68,
-    paddingBottom: 36,
+    paddingHorizontal: 20,
+    paddingTop: 60,
+    paddingBottom: 20,
   },
   cleanAppTitle: {
-    fontSize: responsiveDims.isSmallScreen ? responsiveFonts.title : responsiveFonts.largeTitle,
+    fontSize: responsiveFonts.largeTitle,
     fontWeight: '700',
     color: '#000000',
     letterSpacing: -0.5,
-    marginBottom: 8,
+    marginBottom: responsiveSpacing.sm,
   },
   headerSubtitle: {
-    fontSize: 16,
+    fontSize: responsiveFonts.lg,
     color: '#8E8E93',
-    marginTop: 6,
+    marginTop: responsiveSpacing.sm,
   },
   smartSummaryContainer: {
     flexDirection: 'row',
@@ -1176,10 +1220,13 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   allergyShieldContainer: {
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
     marginBottom: 24,
   },
   allergyShieldCard: {
+    backgroundColor: 'rgba(240, 240, 240, 0.95)',
+    borderRadius: 16,
+    padding: 20,
     marginBottom: 0,
   },
   allergyShieldContent: {
@@ -1199,13 +1246,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   allergyShieldTitle: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '700',
     color: '#1C1C1E',
     marginBottom: 2,
   },
   allergyShieldSubtitle: {
-    fontSize: 12,
+    fontSize: 14,
     color: '#8E8E93',
   },
   debugText: {
@@ -1253,8 +1300,45 @@ const styles = StyleSheet.create({
 
   // Urgent Alerts
   urgentAlertsSection: {
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
     marginBottom: 28,
+  },
+  expiringSoonCard: {
+    backgroundColor: 'rgba(255, 210, 210, 0.35)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 120, 120, 0.5)',
+    borderRadius: 16,
+    overflow: 'hidden',
+    marginBottom: 8,
+  },
+  expiringSoonGlassOuter: {
+    marginBottom: 8,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#E88',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  expiringSoonGlassBlur: {
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  expiringSoonGlassBorder: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 140, 140, 0.5)',
+    overflow: 'hidden',
+  },
+  expiringSoonGlassGradient: {
+    padding: 16,
+    borderRadius: 15,
+  },
+  expiringSoonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
   },
   alertCard: {
     flexDirection: 'row',
@@ -1378,9 +1462,8 @@ const styles = StyleSheet.create({
   glassRecipeCardWrapper: {
     width: responsiveDims.isSmallScreen ? scaleWidth(140) : scaleWidth(160),
     marginRight: responsiveSpacing.md,
-    backgroundColor: 'transparent', // Remove background separation
-    marginVertical: 4, // Add vertical margin for floating effect
-    // Enhanced floating shadow
+    backgroundColor: 'transparent',
+    marginVertical: responsiveSpacing.xs,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.12,
@@ -1390,51 +1473,53 @@ const styles = StyleSheet.create({
   glassRecipeCard: {
     width: responsiveDims.isSmallScreen ? scaleWidth(140) : scaleWidth(160),
     marginRight: responsiveSpacing.md,
-    borderRadius: scaleSize(20),
+    borderRadius: 20,
     overflow: 'hidden',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: scaleSize(4) },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.15,
-    shadowRadius: scaleSize(12),
+    shadowRadius: 12,
     elevation: 8,
     backgroundColor: 'rgba(255, 255, 255, 0.95)',
-    borderWidth: scaleSize(1),
+    borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   glassRecipeGradient: {
-    padding: responsivePadding.md,
-    borderRadius: scaleSize(20),
+    padding: responsiveSpacing.lg,
+    borderRadius: 20,
   },
 
   // Condensed Pantry
   condensedPantrySection: {
-    paddingHorizontal: 24,
-    marginBottom: 32,
+    paddingHorizontal: 20,
+    marginBottom: responsiveSpacing.xxxl,
   },
   topCategoriesGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
-    marginTop: 12,
+    gap: responsiveSpacing.md,
+    marginTop: responsiveSpacing.md,
   },
   horizontalCategoriesRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginTop: 12,
-    paddingHorizontal: 4,
+    marginTop: responsiveSpacing.md,
+    paddingHorizontal: responsiveSpacing.xs,
   },
   pantryCategoriesScroll: {
-    marginTop: 16,
+    marginTop: responsiveSpacing.lg,
   },
   pantryCategoriesContainer: {
     paddingLeft: 0,
-    paddingRight: 24,
+    paddingRight: 20,
   },
   topCategoryCard: {
-    width: (width - 72) / 2,
+    flex: 1,
+    minWidth: 0,
+    maxWidth: (width - 72) / 2,
     backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    borderRadius: 12,
-    padding: 16,
+    borderRadius: responsiveSpacing.md,
+    padding: responsiveSpacing.lg,
     alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
@@ -1462,13 +1547,13 @@ const styles = StyleSheet.create({
   pantryCategoryCard: {
     width: 120,
     height: 120,
-    marginRight: 12,
+    marginRight: responsiveSpacing.md,
     borderRadius: 18,
   },
   pantryCategoryContent: {
     width: '100%',
     height: '100%',
-    padding: 16,
+    padding: responsiveSpacing.lg,
     borderRadius: 18,
     borderWidth: 1.5,
     backgroundColor: '#FFFFFF',
@@ -1542,8 +1627,11 @@ const styles = StyleSheet.create({
 
   // Compact Budget with Glassmorphism
   compactBudgetSection: {
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
     marginBottom: 32,
+  },
+  budgetCardLightGray: {
+    backgroundColor: 'rgba(248, 248, 248, 0.98)',
   },
   glassBudgetCard: {
     borderRadius: 20,
@@ -1569,6 +1657,13 @@ const styles = StyleSheet.create({
     alignItems: 'baseline',
     marginBottom: 8,
   },
+  budgetSkeletonBar: {
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: 'rgba(142, 142, 147, 0.25)',
+    flex: 1,
+    marginRight: 8,
+  },
   budgetSpent: {
     fontSize: 20,
     fontWeight: '700',
@@ -1591,27 +1686,15 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   glassProgressBar: {
-    height: 14,
+    height: 8,
     backgroundColor: 'rgba(142, 142, 147, 0.2)',
-    borderRadius: 8,
+    borderRadius: 4,
     marginBottom: 8,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.5)',
-    shadowColor: 'rgba(0, 0, 0, 0.08)',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
-    elevation: 2,
   },
   glassProgressFill: {
     height: '100%',
-    borderRadius: 8,
-    shadowColor: 'rgba(0, 0, 0, 0.1)',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-    elevation: 2,
+    borderRadius: 4,
   },
   budgetRemainingText: {
     fontSize: 14,
@@ -1659,7 +1742,7 @@ const styles = StyleSheet.create({
   },
   // Smart List
   smartListSection: {
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
     marginBottom: 32,
   },
   smartListCard: {
@@ -1747,43 +1830,45 @@ const styles = StyleSheet.create({
     maxWidth: '48%',
   },
   quickActionCard: {
-    width: (responsiveDims.width - scaleWidth(84)) / 2,
+    flex: 1,
+    minWidth: 0,
+    maxWidth: '48%',
     backgroundColor: 'rgba(255, 255, 255, 0.95)',
-    borderRadius: scaleSize(20),
-    padding: responsivePadding.lg,
+    borderRadius: 20,
+    padding: responsiveSpacing.lg,
     alignItems: 'center',
     marginHorizontal: responsiveSpacing.xs,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: scaleSize(4) },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.15,
-    shadowRadius: scaleSize(12),
+    shadowRadius: 12,
     elevation: 8,
-    borderWidth: scaleSize(1),
+    borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   glassQuickActionCard: {
-    flex: 1, // Take equal space in each row
-    height: scaleSize(180), // Increased height for better text fit
-    borderRadius: scaleSize(20),
+    flex: 1,
+    minHeight: 180,
+    borderRadius: 20,
     overflow: 'hidden',
-    marginHorizontal: responsiveSpacing.xs, // Small margin between cards
+    marginHorizontal: responsiveSpacing.xs,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: scaleSize(6) },
+    shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.25,
-    shadowRadius: scaleSize(12),
+    shadowRadius: 12,
     elevation: 10,
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    borderWidth: scaleSize(1),
+    borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.2)',
   },
   glassQuickActionGradient: {
-    flex: 1, // Take full height of parent
-    padding: responsivePadding.xl, // Increased padding for better text spacing
-    borderRadius: scaleSize(20),
-    borderWidth: scaleSize(1),
+    flex: 1,
+    padding: 20,
+    borderRadius: 20,
+    borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.4)',
-    justifyContent: 'center', // Center content vertically
-    alignItems: 'center', // Center content horizontally
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   quickActionContent: {
     alignItems: 'center',
@@ -1791,16 +1876,16 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   quickActionIcon: {
-    width: scaleSize(56), // Even larger icon for bigger cards
-    height: scaleSize(56), // Even larger icon for bigger cards
-    borderRadius: scaleSize(28),
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: 'rgba(106, 149, 113, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: responsiveSpacing.md, // More spacing for bigger cards
+    marginBottom: responsiveSpacing.md,
   },
   quickActionEmoji: {
-    fontSize: responsiveFonts.xxl, // Larger emoji for bigger icons
+    fontSize: responsiveFonts.xxl,
   },
   quickActionTitle: {
     fontSize: responsiveFonts.md,
@@ -1820,25 +1905,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: responsiveSpacing.lg,
   },
   optimalSectionTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '600',
     color: '#1C1C1E',
     letterSpacing: -0.2,
     lineHeight: 28,
   },
   optimalViewAllText: {
-    fontSize: 14,
+    fontSize: responsiveFonts.md,
     fontWeight: '500',
     color: '#6A9571',
   },
 
   // iOS 26 Liquid Glass Styles
   ios26QuickActionCard: {
-    width: (responsiveDims.width - scaleWidth(84)) / 2,
-    borderRadius: scaleSize(16),
+    flex: 1,
+    minWidth: 0,
+    maxWidth: '48%',
+    borderRadius: 16,
     overflow: 'hidden',
     marginHorizontal: responsiveSpacing.xs,
   },

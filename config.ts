@@ -8,7 +8,10 @@ function readEnv(name: string, fallback: string = ''): string {
   if (fromProcess && typeof fromProcess === 'string') return fromProcess
 
   // Fallback to app config extras (useful in dev clients/TestFlight)
-  const fromExtra = (Constants?.expoConfig as any)?.extra?.[name]
+  const fromExtra =
+    (Constants?.expoConfig as any)?.extra?.[name] ??
+    (Constants?.manifest as any)?.extra?.[name] ??
+    (Constants?.manifest2 as any)?.extra?.[name]
   if (fromExtra && typeof fromExtra === 'string') return fromExtra
 
   // Also check unprefixed variant (OPENAI_API_KEY)
@@ -16,7 +19,10 @@ function readEnv(name: string, fallback: string = ''): string {
     const alt = name.replace('EXPO_PUBLIC_', '')
     const fromProcessAlt = (process.env as any)?.[alt]
     if (fromProcessAlt && typeof fromProcessAlt === 'string') return fromProcessAlt
-    const fromExtraAlt = (Constants?.expoConfig as any)?.extra?.[alt]
+    const fromExtraAlt =
+      (Constants?.expoConfig as any)?.extra?.[alt] ??
+      (Constants?.manifest as any)?.extra?.[alt] ??
+      (Constants?.manifest2 as any)?.extra?.[alt]
     if (fromExtraAlt && typeof fromExtraAlt === 'string') return fromExtraAlt
   }
 
@@ -24,27 +30,62 @@ function readEnv(name: string, fallback: string = ''): string {
 }
 
 export const config = {
-  // OpenAI API - Get from: https://platform.openai.com/api-keys
-  openaiApiKey: readEnv('EXPO_PUBLIC_OPENAI_API_KEY', ''),
-  openaiModel: 'gpt-4o',
+  // OpenAI API - do not expose in client env (use server proxy instead)
+  get openaiApiKey() {
+    return readEnv('OPENAI_API_KEY', '')
+  },
+  get openaiModel() {
+    return 'gpt-4o'
+  },
   // Optional fallback model to improve availability under load
-  openaiFallbackModel: 'gpt-4o',
+  get openaiFallbackModel() {
+    return 'gpt-4o'
+  },
   // Retry behavior for transient errors (429, network)
-  openaiMaxRetries: 2,
-  openaiInitialRetryMs: 600,
-  openaiTemperature: 0.7,
-  openaiMaxTokens: 500,
+  get openaiMaxRetries() {
+    return 2
+  },
+  get openaiInitialRetryMs() {
+    return 600
+  },
+  get openaiTemperature() {
+    return 0.7
+  },
+  get openaiMaxTokens() {
+    return 500
+  },
   
   // OpenRouter (multi-provider) fallback - optional
-  openrouterApiKey: readEnv('EXPO_PUBLIC_OPENROUTER_API_KEY', ''),
-  openrouterModel: 'openrouter/auto',
+  get openrouterApiKey() {
+    return readEnv('EXPO_PUBLIC_OPENROUTER_API_KEY', '')
+  },
+  get openrouterModel() {
+    return 'openrouter/auto'
+  },
   
   // API base for proxy server
-  apiBase: readEnv('API_BASE', 'http://localhost:3000'),
+  get apiBase() {
+    // Prefer Expo public env to support device builds; fall back to API_BASE.
+    return readEnv('EXPO_PUBLIC_API_BASE', readEnv('API_BASE', 'http://localhost:3000'))
+  },
   
   // Supabase - Get from: https://app.supabase.com (Project Settings > API)
-  supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL || '',
-  supabaseAnonKey: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
+  get supabaseUrl() {
+    return readEnv('EXPO_PUBLIC_SUPABASE_URL', '')
+  },
+  get supabaseAnonKey() {
+    return readEnv('EXPO_PUBLIC_SUPABASE_ANON_KEY', '')
+  },
+
+  // Feature flags – set EXPO_PUBLIC_ENABLE_* to "true" or "1" to enable
+  get enablePaywall(): boolean {
+    const v = readEnv('EXPO_PUBLIC_ENABLE_PAYWALL', '').toLowerCase()
+    return v === 'true' || v === '1'
+  },
+  get enableRecipes(): boolean {
+    const v = readEnv('EXPO_PUBLIC_ENABLE_RECIPES', '').toLowerCase()
+    return v === 'true' || v === '1'
+  },
 }
 
 export default config

@@ -16,6 +16,8 @@ import { useRouter } from 'expo-router'
 import { useAuth } from '../lib/AuthContext'
 import { notificationsService } from '../lib/NotificationsService'
 import { userPreferencesService } from '../lib/UserPreferencesService'
+import { useToast } from '../lib/ToastContext'
+import { logger } from '../lib/Logger'
 import * as Notifications from 'expo-notifications'
 import * as Device from 'expo-device'
 import * as Haptics from 'expo-haptics'
@@ -32,6 +34,7 @@ const responsiveDims = getResponsiveDimensions()
 export default function NotificationsSettingsScreen() {
   const router = useRouter()
   const { user } = useAuth()
+  const { showToast } = useToast()
   const [loading, setLoading] = useState(false)
   const [permissionStatus, setPermissionStatus] = useState<string>('undetermined')
   const [isDevice, setIsDevice] = useState(false)
@@ -58,7 +61,7 @@ export default function NotificationsSettingsScreen() {
         setPermissionStatus(status)
       }
     } catch (error) {
-      console.error('Error checking permissions:', error)
+      logger.error('Error checking notification permissions', { error })
     }
   }
 
@@ -76,7 +79,7 @@ export default function NotificationsSettingsScreen() {
         }
       }
     } catch (error) {
-      console.error('Error loading notification settings:', error)
+      logger.error('Error loading notification settings', { error })
     }
   }
 
@@ -91,8 +94,8 @@ export default function NotificationsSettingsScreen() {
         
         const { error } = await userPreferencesService.savePreferences(updatedPreferences as any, user.id)
         if (error) {
-          console.error('Error saving notification settings:', error)
-          Alert.alert('Error', 'Failed to save notification settings. Please try again.')
+          logger.error('Error saving notification settings', { error })
+          showToast('Failed to save notification settings. Please try again.', { kind: 'error', durationMs: 3500 })
           return
         }
         
@@ -110,8 +113,8 @@ export default function NotificationsSettingsScreen() {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
       }
     } catch (error) {
-      console.error('Error saving notification settings:', error)
-      Alert.alert('Error', 'Failed to save notification settings. Please try again.')
+      logger.error('Error saving notification settings', { error })
+      showToast('Failed to save notification settings. Please try again.', { kind: 'error', durationMs: 3500 })
     }
   }
 
@@ -121,11 +124,7 @@ export default function NotificationsSettingsScreen() {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
       
       if (!Device.isDevice) {
-        Alert.alert(
-          'Physical Device Required',
-          'Push notifications only work on physical devices, not in simulators or Expo Go.',
-          [{ text: 'OK' }]
-        )
+        showToast('Push notifications require a physical device (not simulator/Expo Go).', { kind: 'warning', durationMs: 4500 })
         setLoading(false)
         return
       }
@@ -134,21 +133,13 @@ export default function NotificationsSettingsScreen() {
       
       if (token) {
         await checkPermissions()
-        Alert.alert(
-          'Notifications Enabled',
-          'You will now receive push notifications from SAVR.',
-          [{ text: 'OK' }]
-        )
+        showToast('Notifications enabled.', { kind: 'success' })
       } else {
-        Alert.alert(
-          'Permission Denied',
-          'Please enable notifications in your device settings to receive updates.',
-          [{ text: 'OK' }]
-        )
+        showToast('Permission denied. Enable notifications in your device settings.', { kind: 'warning', durationMs: 4500 })
       }
     } catch (error) {
-      console.error('Error requesting permissions:', error)
-      Alert.alert('Error', 'Failed to enable notifications. Please try again.')
+      logger.error('Error requesting notification permissions', { error })
+      showToast('Failed to enable notifications. Please try again.', { kind: 'error', durationMs: 3500 })
     } finally {
       setLoading(false)
     }

@@ -17,36 +17,70 @@ import * as Haptics from 'expo-haptics'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
 import { getSmtpSetupInstructions } from '../lib/smtpDiagnostics'
+import { useToast } from '../lib/ToastContext'
+import { getPasswordResetRedirectUrl } from '../lib/authDeepLink'
 
 export default function AuthScreen() {
   const router = useRouter()
   const { signIn, signUp } = useAuth()
-  const [isSignUp, setIsSignUp] = useState(false)
+  const { showToast } = useToast()
+  const [isSignUp, setIsSignUp] = useState(false) // Sign-in by default; new users go to onboarding
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [name, setName] = useState('')
   const [loading, setLoading] = useState(false)
   const [emailError, setEmailError] = useState<string | null>(null)
+  const [resettingPassword, setResettingPassword] = useState(false)
+
+  const validateEmail = (email: string): { valid: boolean; error?: string } => {
+    const trimmed = email.trim().toLowerCase()
+    if (!trimmed) {
+      return { valid: false, error: 'Email is required' }
+    }
+    // Basic email format validation (RFC 5322 simplified)
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(trimmed)) {
+      return { valid: false, error: 'Please enter a valid email address' }
+    }
+    // Check for common issues
+    if (trimmed.includes('..') || trimmed.startsWith('.') || trimmed.startsWith('@')) {
+      return { valid: false, error: 'Please enter a valid email address' }
+    }
+    return { valid: true }
+  }
 
   const handleAuth = async () => {
-    if (!email.trim() || !password.trim()) {
-      Alert.alert('Error', 'Please fill in all fields')
+    const trimmedEmail = email.trim().toLowerCase()
+    
+    if (!trimmedEmail || !password.trim()) {
+      showToast('Please fill in all fields.', { kind: 'warning' })
       return
     }
 
     if (isSignUp && !name.trim()) {
-      Alert.alert('Error', 'Please enter your full name')
+      showToast('Please enter your full name.', { kind: 'warning' })
       return
     }
 
+    // Validate email format before calling Supabase
+    if (isSignUp) {
+      const emailValidation = validateEmail(trimmedEmail)
+      if (!emailValidation.valid) {
+        setEmailError(emailValidation.error || 'Invalid email format')
+        showToast(emailValidation.error || 'Invalid email format', { kind: 'error' })
+        return
+      }
+      setEmailError(null)
+    }
+
     if (isSignUp && password !== confirmPassword) {
-      Alert.alert('Error', 'Passwords do not match')
+      showToast('Passwords do not match.', { kind: 'warning' })
       return
     }
 
     if (isSignUp && password.length < 6) {
-      Alert.alert('Error', 'Password must be at least 6 characters')
+      showToast('Password must be at least 6 characters.', { kind: 'warning' })
       return
     }
 
@@ -55,7 +89,37 @@ export default function AuthScreen() {
 
     try {
       if (isSignUp) {
-        const { error, emailWarning } = await signUp(email, password, name)
+        // Sign up - normalize email (trim + lowercase) before sending to Supabase
+        const { error, emailWarning } = await signUp(trimmedEmail, password, name.trim())
+        
+        // Immediately stop loading and navigate on success (optimistic)
+        if (!error) {
+          setLoading(false)
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+          
+          // Navigate immediately - don't wait for alerts
+          // Show non-blocking toasts for success messaging
+          setTimeout(() => {
+            if (emailWarning) {
+              const isSmtpIssue = emailWarning.startsWith('SMTP_')
+              
+              if (isSmtpIssue) {
+                const instructions = getSmtpSetupInstructions(emailWarning)
+                const instructionsText = instructions.join('\n')
+                showToast(`Account created. Email verification not configured yet.\n\n${instructionsText}`, { kind: 'warning', durationMs: 5000 })
+              } else {
+                showToast('Account created. Verification email could not be sent right now.', { kind: 'warning', durationMs: 3500 })
+              }
+            } else {
+              showToast('Account created. Check your email to verify.', { kind: 'success' })
+            }
+          }, 100)
+          
+          // Navigate immediately without waiting
+          router.replace(`/onboarding?email=${encodeURIComponent(trimmedEmail)}`)
+          return
+        }
+        
         if (error) {
           // Check if it's an SMTP configuration error
           if (error.code === 'smtp_not_configured' || error.smtpErrorType) {
@@ -114,24 +178,15 @@ export default function AuthScreen() {
             )
           } else {
             // Real error - account creation failed
-            // Check if it's an email-related error
             const errorMessage = error.message?.toLowerCase() || ''
-            const isEmailRelated = 
-              errorMessage.includes('email') || 
-              errorMessage.includes('smtp') ||
-              errorMessage.includes('confirmation') ||
-              errorMessage.includes('verification') ||
-              errorMessage.includes('send')
+            const isInvalidFormat = errorMessage.includes('invalid format') || errorMessage.includes('unable to validate email')
             
-            if (isEmailRelated) {
-              // Provide helpful SMTP troubleshooting guidance
-              const errorDetails = error.status === 500 
-                ? '\n\n🔍 Error 500 suggests SMTP connection issue. Check:\n• Supabase Logs → Auth Logs for specific error\n• SMTP credentials are correct\n• Port (try 587 or 465)\n• Sender email is verified\n\nSee SMTP_DIAGNOSTIC_CHECKLIST.md for full troubleshooting.'
-                : ''
-              
+            if (isInvalidFormat) {
+              // Email format validation error from Supabase
+              setEmailError('Please enter a valid email address (e.g., name@example.com)')
               Alert.alert(
-                '⚠️ Email Sending Failed',
-                `Account creation failed: ${error.message || 'Error sending confirmation email'}${errorDetails}\n\n📧 If SMTP is configured, check:\n1. Supabase Dashboard → Logs → Auth Logs\n2. Verify SMTP credentials are correct\n3. Check email provider status\n4. See SMTP_DIAGNOSTIC_CHECKLIST.md\n\n⚡ Quick Fix (Testing):\nDisable email confirmation in Authentication → Providers → Email`,
+                'Invalid Email Format',
+                'The email address you entered is not in a valid format. Please check:\n\n• No spaces\n• Contains @ symbol\n• Has a domain (e.g., gmail.com)\n• Example: yourname@example.com',
                 [
                   {
                     text: 'OK',
@@ -140,76 +195,98 @@ export default function AuthScreen() {
                 ]
               )
             } else {
-              // Other errors
-              Alert.alert('Sign Up Failed', error.message || 'Please try again')
-            }
-          }
-        } else {
-          // Success! Account was created
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-          
-          // If there's an email warning, show actionable guidance
-          if (emailWarning) {
-            const isSmtpIssue = emailWarning.startsWith('SMTP_')
-            
-            if (isSmtpIssue) {
-              const instructions = getSmtpSetupInstructions(emailWarning)
-              const instructionsText = instructions.join('\n')
+              // Check if it's an email-related error (SMTP, etc.)
+              const isEmailRelated = 
+                errorMessage.includes('email') || 
+                errorMessage.includes('smtp') ||
+                errorMessage.includes('confirmation') ||
+                errorMessage.includes('verification') ||
+                errorMessage.includes('send')
               
-              Alert.alert(
-                '⚠️ Email Verification Not Configured',
-                `Your account was created, but email verification isn't set up yet.\n\n📧 To enable email verification:\n\n${instructionsText}\n\n📖 See SMTP_SETUP_COMPLETE.md for detailed instructions.\n\nYou can continue setting up your profile, but users won't receive verification emails until SMTP is configured.`,
-                [
-                  {
-                    text: 'Continue Anyway',
-                    onPress: () => router.replace(`/onboarding?email=${encodeURIComponent(email)}`)
-                  },
-                  {
-                    text: 'OK',
-                    style: 'cancel'
-                  }
-                ]
-              )
-            } else {
-              Alert.alert(
-                '✅ Account Created!',
-                'Your account was created successfully. We couldn\'t send the verification email right now, but you can:\n\n1. Continue setting up your profile\n2. Resend the verification email later from your profile\n\nYou can still use the app while we fix the email configuration.',
-                [
-                  {
-                    text: 'Continue',
-                    onPress: () => router.replace(`/onboarding?email=${encodeURIComponent(email)}`)
-                  }
-                ]
-              )
+              if (isEmailRelated) {
+                // Provide helpful SMTP troubleshooting guidance
+                const errorDetails = error.status === 500 
+                  ? '\n\n🔍 Error 500 suggests SMTP connection issue. Check:\n• Supabase Logs → Auth Logs for specific error\n• SMTP credentials are correct\n• Port (try 587 or 465)\n• Sender email is verified\n\nSee SMTP_DIAGNOSTIC_CHECKLIST.md for full troubleshooting.'
+                  : ''
+                
+                Alert.alert(
+                  '⚠️ Email Sending Failed',
+                  `Account creation failed: ${error.message || 'Error sending confirmation email'}${errorDetails}\n\n📧 If SMTP is configured, check:\n1. Supabase Dashboard → Logs → Auth Logs\n2. Verify SMTP credentials are correct\n3. Check email provider status\n4. See SMTP_DIAGNOSTIC_CHECKLIST.md\n\n⚡ Quick Fix (Testing):\nDisable email confirmation in Authentication → Providers → Email`,
+                  [
+                    {
+                      text: 'OK',
+                      style: 'default'
+                    }
+                  ]
+                )
+              } else {
+                // Other errors
+                showToast(error.message || 'Sign up failed. Please try again.', { kind: 'error', durationMs: 4000 })
+              }
             }
-          } else {
-            // Normal success flow
-            Alert.alert(
-              '✅ Sign Up Complete!',
-              'Please check your email to verify your account. You can continue setting up your profile while we send the verification link.',
-              [
-                {
-                  text: 'Got it!',
-                  onPress: () => router.replace(`/onboarding?email=${encodeURIComponent(email)}`)
-                }
-              ]
-            )
           }
         }
+        // Note: Success case is handled above (lines 62-99) with immediate navigation
       } else {
-        const { error } = await signIn(email, password)
+        const { error } = await signIn(trimmedEmail, password)
         if (error) {
-          Alert.alert('Sign In Failed', error.message || 'Invalid credentials')
+          showToast(error.message || 'Invalid credentials.', { kind: 'error', durationMs: 3500 })
         } else {
           // Existing users go to tabs
-          // PAYWALL TEMPORARILY DISABLED FOR TESTING
+          // Paywall is controlled by EXPO_PUBLIC_ENABLE_PAYWALL; when off, go straight to tabs
           router.replace('/(tabs)')
         }
       }
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Something went wrong')
+      showToast(error?.message || 'Something went wrong.', { kind: 'error', durationMs: 3500 })
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleForgotPassword = async () => {
+    const trimmedEmail = email.trim().toLowerCase()
+
+    // Require a valid email before attempting reset
+    const { valid, error } = validateEmail(trimmedEmail)
+    if (!valid) {
+      setEmailError(error || 'Please enter a valid email address')
+      showToast(error || 'Please enter a valid email address', { kind: 'warning' })
+      return
+    }
+
+    try {
+      setResettingPassword(true)
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+
+      const redirectTo = getPasswordResetRedirectUrl()
+      const { error: resetError } = await supabase.auth.resetPasswordForEmail(trimmedEmail, {
+        redirectTo,
+      })
+
+      if (resetError) {
+        showToast(resetError.message || 'Could not send reset email. Please try again.', {
+          kind: 'error',
+          durationMs: 4000,
+        })
+        return
+      }
+
+      showToast('Password reset link sent. Check your email.', {
+        kind: 'success',
+        durationMs: 4500,
+      })
+      Alert.alert(
+        'Check your email',
+        'We sent a link to reset your password. Open the link in your email to choose a new password, then return here to sign in.'
+      )
+    } catch (error: any) {
+      showToast(error?.message || 'Something went wrong while sending the reset email.', {
+        kind: 'error',
+        durationMs: 4000,
+      })
+    } finally {
+      setResettingPassword(false)
     }
   }
 
@@ -300,6 +377,19 @@ export default function AuthScreen() {
             />
           </View>
 
+          {/* Forgot Password (Sign In only) */}
+          {!isSignUp && (
+            <Pressable
+              style={styles.forgotPasswordButton}
+              onPress={handleForgotPassword}
+              disabled={loading || resettingPassword}
+            >
+              <Text style={styles.forgotPasswordText}>
+                {resettingPassword ? 'Sending reset link…' : 'Forgot password?'}
+              </Text>
+            </Pressable>
+          )}
+
           {isSignUp && (
             <View style={styles.inputWrapper}>
               <Text style={styles.inputLabel}>Confirm Password</Text>
@@ -341,19 +431,23 @@ export default function AuthScreen() {
             </LinearGradient>
           </Pressable>
 
-          {/* Toggle Sign In/Sign Up */}
+          {/* Toggle Sign In / Get Started */}
           <Pressable
             style={styles.toggleButton}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-              setIsSignUp(!isSignUp)
+              if (isSignUp) {
+                setIsSignUp(false)
+              } else {
+                router.replace('/onboarding')
+              }
             }}
             disabled={loading}
           >
             <Text style={styles.toggleText}>
               {isSignUp ? 'Already have an account? ' : "Don't have an account? "}
               <Text style={styles.toggleTextBold}>
-                {isSignUp ? 'Sign In' : 'Sign Up'}
+                {isSignUp ? 'Sign In' : 'Get Started'}
               </Text>
             </Text>
           </Pressable>
@@ -397,6 +491,16 @@ const styles = StyleSheet.create({
   },
   formContainer: {
     gap: 20,
+  },
+  forgotPasswordButton: {
+    alignSelf: 'flex-end',
+    marginTop: -8,
+    marginBottom: 8,
+  },
+  forgotPasswordText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#6A9571',
   },
   inputWrapper: {
     gap: 8,

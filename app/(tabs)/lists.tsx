@@ -21,15 +21,13 @@ import { useListsUnified } from '../../lib/useListsUnified'
 // import { useCollaborativeLists } from '../../lib/CollaborativeListsContext' // Using useListsUnified instead
 import SageAssistant from '../../components/SageAssistantV2'
 import * as Haptics from 'expo-haptics'
-import { 
-  scaleSize, 
-  scaleFont, 
-  scaleWidth, 
-  scaleHeight, 
-  responsivePadding, 
-  responsiveFonts, 
+import {
+  scaleSize,
+  scaleWidth,
+  responsivePadding,
+  responsiveFonts,
   responsiveSpacing,
-  getResponsiveDimensions 
+  getResponsiveDimensions,
 } from '../../lib/responsive'
 
 const { width } = Dimensions.get('window')
@@ -250,7 +248,11 @@ export default function ListsScreen() {
     }
   }
   
-  const handleDeleteList = (listId: string, listName: string) => {
+  const handleDeleteList = (listId: string, listName: string, isOwner?: boolean) => {
+    if (isOwner === false) {
+      Alert.alert('Cannot Delete', 'Only the list owner can delete this list.')
+      return
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
     
     Alert.alert(
@@ -397,7 +399,7 @@ export default function ListsScreen() {
                   key={list.id}
                   style={styles.compactListCard}
                   onPress={() => handleListPress(list.id, list.name)}
-                  onLongPress={() => handleDeleteList(list.id, list.name)}
+                  onLongPress={() => handleDeleteList(list.id, list.name, list.isOwner)}
                 >
                   <LinearGradient
                     colors={['rgba(255, 255, 255, 0.4)', 'rgba(106, 149, 113, 0.1)', 'rgba(255, 255, 255, 0.2)']}
@@ -699,11 +701,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: responsivePadding.lg,
-    paddingTop: responsiveDims.isSmallScreen ? scaleSize(50) : scaleSize(60),
-    paddingBottom: responsivePadding.lg,
+    paddingTop: (responsiveDims.isSmallScreen ? scaleSize(50) : scaleSize(60)) + 20,
+    paddingBottom: responsiveSpacing.lg,
   },
   cleanAppTitle: {
-    fontSize: responsiveDims.isSmallScreen ? responsiveFonts.title : responsiveFonts.largeTitle,
+    fontSize: responsiveFonts.largeTitle,
     fontWeight: '700',
     color: '#000000',
     letterSpacing: -0.5,
@@ -768,16 +770,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 60,
-    paddingBottom: 28,
+    paddingHorizontal: responsivePadding.xl,
+    paddingTop: (responsiveDims.isSmallScreen ? scaleSize(50) : scaleSize(60)) + 20,
+    paddingBottom: responsiveSpacing.xxl,
   },
   headerButtons: {
     flexDirection: 'row',
-    gap: 12,
+    gap: responsiveSpacing.md,
   },
   headerSubtitle: {
-    fontSize: 14,
+    fontSize: responsiveFonts.md,
     fontWeight: '500',
     color: '#8E8E93',
     letterSpacing: -0.2,
@@ -822,8 +824,8 @@ const styles = StyleSheet.create({
   
   // Lists Container
   listsContainer: {
-    paddingHorizontal: 24,
-    paddingTop: 32,
+    paddingHorizontal: 28,
+    paddingTop: 40,
     gap: 12,
     marginBottom: 40,
   },

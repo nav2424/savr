@@ -1,47 +1,55 @@
 /**
  * Subscription Management Screen
- * Shows subscription status, plan details, and manage options
- * 
- * ⚠️ TEMPORARILY DISABLED FOR TESTING
- * This screen is currently disabled in the app flow.
- * To re-enable, uncomment SubscriptionProvider and SubscriptionGate in app/_layout.tsx
+ * Shows subscription status, plan details, and manage options.
+ * Paywall/subscription flow is enabled when EXPO_PUBLIC_ENABLE_PAYWALL=true.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
+  Pressable,
   ActivityIndicator,
   Alert,
   SafeAreaView,
-  Linking,
   Platform,
+  Linking,
 } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { Stack, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSubscription } from '../lib/SubscriptionContext';
+import {
+  showHostedPaywall,
+  isPro,
+  getCurrentOfferingOrThrow,
+  logPaywallDiagnostics,
+} from '../lib/revenuecat';
+import { PAYWALL_RESULT } from 'react-native-purchases-ui';
 
 export default function SubscriptionManagementScreen() {
   const router = useRouter();
-  const { 
-    isSubscribed, 
-    customerInfo, 
+  const {
+    isSubscribed,
+    customerInfo,
     trialDaysRemaining,
     restorePurchases,
-    currentOffering 
+    presentCustomerCenter,
+    getSubscriptionStatus,
   } = useSubscription();
-  
+
   const [restoring, setRestoring] = useState(false);
 
-  // Get active subscription info
-  const activeEntitlement = customerInfo?.entitlements.active['premium'];
-  const subscriptionType = activeEntitlement?.productIdentifier.includes('yearly') 
-    ? 'Annual' 
-    : 'Monthly';
-  const expirationDate = activeEntitlement?.expirationDate 
+  const activeEntitlement = customerInfo?.entitlements.active['pro'];
+  const subscriptionType =
+    activeEntitlement?.productIdentifier?.includes('annual') ||
+    activeEntitlement?.productIdentifier === 'annual_subscription_1'
+      ? 'Annual'
+      : 'Monthly';
+  const expirationDate = activeEntitlement?.expirationDate
     ? new Date(activeEntitlement.expirationDate)
     : null;
   const willRenew = activeEntitlement?.willRenew || false;
@@ -50,7 +58,7 @@ export default function SubscriptionManagementScreen() {
     setRestoring(true);
     const result = await restorePurchases();
     setRestoring(false);
-    
+
     if (result.success) {
       Alert.alert('Success', 'Your subscription has been restored!');
     } else {
@@ -58,17 +66,72 @@ export default function SubscriptionManagementScreen() {
     }
   };
 
-  const handleManageSubscription = () => {
-    if (Platform.OS === 'ios') {
-      Linking.openURL('https://apps.apple.com/account/subscriptions');
-    } else {
-      Linking.openURL('https://play.google.com/store/account/subscriptions');
+  const handleManageSubscription = async () => {
+    try {
+      await presentCustomerCenter({
+        callbacks: {
+          onRestoreCompleted: async () => {
+            await restorePurchases();
+          },
+        },
+      });
+    } catch {
+      if (Platform.OS === 'ios') {
+        Linking.openURL('https://apps.apple.com/account/subscriptions');
+      } else {
+        Linking.openURL('https://play.google.com/store/account/subscriptions');
+      }
     }
   };
 
-  const handleUpgrade = () => {
-    router.push('/paywall');
+  const handleUpgrade = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    try {
+      const offering = await getCurrentOfferingOrThrow();
+      const isProBefore = await isPro();
+      logPaywallDiagnostics(offering, isProBefore);
+
+      const result = await showHostedPaywall();
+
+      const isProAfter = await isPro();
+      if (__DEV__) {
+        logPaywallDiagnostics(offering, isProAfter);
+      }
+
+      if (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) {
+        await getSubscriptionStatus();
+      } else if (result === PAYWALL_RESULT.NOT_PRESENTED) {
+        Alert.alert(
+          'Unable to Load Subscription',
+          'The subscription paywall could not be loaded. Ensure RevenueCat API keys are set and your offering is Current in the dashboard.'
+        );
+      }
+    } catch (err) {
+      if (__DEV__) {
+        console.warn('[RevenueCat] handleUpgrade failed:', err);
+      }
+      Alert.alert(
+        'Error',
+        err instanceof Error ? err.message : 'Failed to load subscription options.'
+      );
+    }
   };
+
+  const BackHeader = () => (
+    <View style={styles.header}>
+      <Pressable
+        style={styles.backButton}
+        onPress={() => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          router.back();
+        }}
+      >
+        <Text style={styles.backButtonText}>← Back</Text>
+      </Pressable>
+      <Text style={styles.headerTitle}>Subscription</Text>
+    </View>
+  );
 
   if (!isSubscribed) {
     return (
@@ -80,19 +143,24 @@ export default function SubscriptionManagementScreen() {
             headerTintColor: '#FFFFFF',
           }}
         />
+        <BackHeader />
         <View style={styles.notSubscribedContainer}>
           <Text style={styles.notSubscribedIcon}>🔒</Text>
           <Text style={styles.notSubscribedTitle}>No Active Subscription</Text>
           <Text style={styles.notSubscribedText}>
             Subscribe to unlock all SAVR features
           </Text>
-          
-          <TouchableOpacity style={styles.subscribeButton} onPress={handleUpgrade}>
+
+          <TouchableOpacity
+            style={styles.subscribeButton}
+            onPress={handleUpgrade}
+            activeOpacity={0.8}
+          >
             <Text style={styles.subscribeButtonText}>View Plans</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity 
-            style={styles.restoreButtonAlt} 
+          <TouchableOpacity
+            style={styles.restoreButtonAlt}
             onPress={handleRestore}
             disabled={restoring}
           >
@@ -116,9 +184,8 @@ export default function SubscriptionManagementScreen() {
           headerTintColor: '#FFFFFF',
         }}
       />
-
+      <BackHeader />
       <ScrollView style={styles.scrollView}>
-        {/* Active Subscription Card */}
         <LinearGradient
           colors={['#6A9571', '#4A7558']}
           style={styles.activeCard}
@@ -126,20 +193,20 @@ export default function SubscriptionManagementScreen() {
           <Text style={styles.activeIcon}>✨</Text>
           <Text style={styles.activeTitle}>SAVR Premium</Text>
           <Text style={styles.activeSubtitle}>Active Subscription</Text>
-          
+
           {trialDaysRemaining !== null && trialDaysRemaining > 0 && (
             <View style={styles.trialBadge}>
               <Text style={styles.trialText}>
-                🎁 {trialDaysRemaining} {trialDaysRemaining === 1 ? 'day' : 'days'} left in trial
+                🎁 {trialDaysRemaining}{' '}
+                {trialDaysRemaining === 1 ? 'day' : 'days'} left in trial
               </Text>
             </View>
           )}
         </LinearGradient>
 
-        {/* Subscription Details */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Subscription Details</Text>
-          
+
           <View style={styles.detailRow}>
             <Text style={styles.detailLabel}>Plan</Text>
             <Text style={styles.detailValue}>{subscriptionType}</Text>
@@ -167,16 +234,13 @@ export default function SubscriptionManagementScreen() {
 
           <View style={styles.detailRow}>
             <Text style={styles.detailLabel}>Auto-Renew</Text>
-            <Text style={styles.detailValue}>
-              {willRenew ? 'On' : 'Off'}
-            </Text>
+            <Text style={styles.detailValue}>{willRenew ? 'On' : 'Off'}</Text>
           </View>
         </View>
 
-        {/* Features Included */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>What's Included</Text>
-          
+
           {[
             '✅ Unlimited receipt scanning',
             '✅ Unlimited pantry items',
@@ -193,7 +257,6 @@ export default function SubscriptionManagementScreen() {
           ))}
         </View>
 
-        {/* Actions */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Manage</Text>
 
@@ -209,13 +272,12 @@ export default function SubscriptionManagementScreen() {
           </TouchableOpacity>
 
           {subscriptionType === 'Monthly' && (
-            <TouchableOpacity
-              style={styles.actionButton}
-              onPress={handleUpgrade}
-            >
+            <TouchableOpacity style={styles.actionButton} onPress={handleUpgrade}>
               <View style={styles.actionLeft}>
                 <Text style={styles.actionIcon}>💎</Text>
-                <Text style={styles.actionText}>Upgrade to Annual (Save 33%)</Text>
+                <Text style={styles.actionText}>
+                  Upgrade to Annual (Save 33%)
+                </Text>
               </View>
               <Text style={styles.actionArrow}>›</Text>
             </TouchableOpacity>
@@ -238,11 +300,12 @@ export default function SubscriptionManagementScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Info */}
         <View style={styles.infoCard}>
           <Text style={styles.infoText}>
-            To cancel your subscription, go to your {Platform.OS === 'ios' ? 'App Store' : 'Google Play'} account settings. 
-            Cancellation takes effect at the end of your current billing period.
+            To cancel your subscription, go to your{' '}
+            {Platform.OS === 'ios' ? 'App Store' : 'Google Play'} account
+            settings. Cancellation takes effect at the end of your current
+            billing period.
           </Text>
         </View>
       </ScrollView>
@@ -254,6 +317,31 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F5F5F5',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingTop: Platform.OS === 'ios' ? 8 : 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E8E8E8',
+  },
+  backButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    marginRight: 12,
+  },
+  backButtonText: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#6A9571',
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1A1A1A',
   },
   scrollView: {
     flex: 1,
@@ -419,4 +507,3 @@ const styles = StyleSheet.create({
     textDecorationLine: 'underline',
   },
 });
-

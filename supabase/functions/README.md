@@ -4,8 +4,9 @@
 
 ## Overview
 
-This directory contains Supabase Edge Functions for automated price discovery tasks:
+This directory contains Supabase Edge Functions:
 
+- **delete-account**: Permanently deletes the authenticated user's account (App Store requirement)
 - **scrape-weekly-flyers**: Scrapes grocery flyers weekly and stores deals in the database
 
 ## Prerequisites
@@ -28,6 +29,14 @@ This directory contains Supabase Edge Functions for automated price discovery ta
    ```
 
 ## Deploying Functions
+
+### Deploy Delete Account (App Store requirement)
+
+```bash
+supabase functions deploy delete-account
+```
+
+The function uses the user's JWT (auto-included by the client) and the service role key. Ensure `public.users` has `ON DELETE CASCADE` from `auth.users` (see `docs/sql/account-deletion-cascade.sql`).
 
 ### Deploy Weekly Flyer Scraper
 

@@ -5,6 +5,7 @@ import { LinearGradient } from 'expo-linear-gradient'
 import * as Haptics from 'expo-haptics'
 import { Ionicons } from '@expo/vector-icons'
 import { AllergenCheckResult } from '../lib/BarcodeService'
+import { getSectionLabel } from '../lib/allergenEngine/sectionLabels'
 
 interface AllergenDetailModalProps {
   visible: boolean
@@ -184,15 +185,32 @@ export default function AllergenDetailModal({
                           <View style={styles.section}>
                             <Text style={styles.sectionTitle}>Detection Details</Text>
                             {allergenCheck.matches
-                              .filter(m => m.allergen === allergenCheck.detectedAllergens[0] || allergenCheck.detectedAllergens.includes(m.allergen))
-                              .map((match, index) => (
-                                <View key={index} style={styles.matchItem}>
-                                  <Text style={styles.matchText}>
-                                    Found "{match.matchedTerm}" in {match.source === 'traces' ? 'cross-contact warning' : match.source}
-                                    {match.confidence === 'MEDIUM' && ' (possible match)'}
-                                  </Text>
-                                </View>
-                              ))}
+                              .filter(m => allergenCheck.detectedAllergens.some(da => 
+                                da.toLowerCase() === m.allergen.toLowerCase() || 
+                                m.allergen.toLowerCase().includes(da.toLowerCase()) ||
+                                da.toLowerCase().includes(m.allergen.toLowerCase())
+                              ))
+                              .map((match, index) => {
+                                // Find the display name for this allergen
+                                const allergenDisplayName = allergenCheck.detectedAllergens.find(da => 
+                                  da.toLowerCase() === match.allergen.toLowerCase() ||
+                                  match.allergen.toLowerCase().includes(da.toLowerCase()) ||
+                                  da.toLowerCase().includes(match.allergen.toLowerCase())
+                                ) || match.allergen
+                                
+                                const sourceLabel = getSectionLabel(match.source, { bilingual: true })
+                                
+                                return (
+                                  <View key={index} style={styles.matchItem}>
+                                    <Text style={styles.matchText}>
+                                      {riskLevel === 'HIGH_RISK' 
+                                        ? `✓ Contains ${allergenDisplayName} (found in ${sourceLabel})`
+                                        : `⚠ Possible ${allergenDisplayName} (found in ${sourceLabel})`
+                                      }
+                                    </Text>
+                                  </View>
+                                )
+                              })}
                           </View>
                         )}
                       </View>
