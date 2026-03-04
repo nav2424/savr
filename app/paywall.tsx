@@ -1,12 +1,16 @@
 /**
  * Paywall Screen
  *
- * Standalone paywall screen accessible from navigation.
- * On native (iOS/Android) it presents the RevenueCat hosted paywall.
- * On web or when SDK is unavailable it shows a local feature comparison.
+ * On native (iOS/Android) this screen reads live prices from RevenueCat
+ * (which pulls them from App Store Connect / Google Play), then presents
+ * the RevenueCat hosted paywall for the configured offering.
+ *
+ * On web the SDK cannot fetch real prices, so fallback display values are
+ * shown and the "Start Free Trial" button explains that subscriptions
+ * require the native app.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -29,6 +33,7 @@ import {
   getCurrentOfferingOrThrow,
   logPaywallDiagnostics,
 } from '../lib/revenuecat';
+import { FALLBACK_PRICING } from '../config/revenuecat';
 
 const FEATURES = [
   { icon: '📸', title: 'Receipt Scanning', free: '3 / month', premium: 'Unlimited' },
@@ -41,16 +46,67 @@ const FEATURES = [
   { icon: '🎯', title: 'Priority Support', free: '-', premium: 'Yes' },
 ];
 
-const MONTHLY_PRICE = 4.99;
-const YEARLY_PRICE = 39.99;
-const TRIAL_DAYS = 3;
+function extractPricing(offering: import('react-native-purchases').PurchasesOffering | null) {
+  if (!offering) return null;
+
+  const packages = offering.availablePackages ?? [];
+  let monthlyPkg = packages.find(
+    (p) => p.packageType === 'MONTHLY' || p.identifier === '$rc_monthly'
+  );
+  let annualPkg = packages.find(
+    (p) => p.packageType === 'ANNUAL' || p.identifier === '$rc_annual'
+  );
+
+  if (!monthlyPkg && !annualPkg && packages.length > 0) {
+    monthlyPkg = packages[0];
+  }
+
+  const monthlyPrice = monthlyPkg?.product?.price ?? null;
+  const monthlyPriceString = monthlyPkg?.product?.priceString ?? null;
+  const annualPrice = annualPkg?.product?.price ?? null;
+  const annualPriceString = annualPkg?.product?.priceString ?? null;
+
+  const introPrice = monthlyPkg?.product?.introPrice ?? annualPkg?.product?.introPrice ?? null;
+  const trialDays = introPrice?.periodNumberOfUnits != null && introPrice?.periodUnit === 'DAY'
+    ? introPrice.periodNumberOfUnits
+    : introPrice?.periodNumberOfUnits != null && introPrice?.periodUnit === 'WEEK'
+      ? introPrice.periodNumberOfUnits * 7
+      : null;
+
+  return {
+    monthlyPrice,
+    monthlyPriceString,
+    annualPrice,
+    annualPriceString,
+    trialDays,
+    monthlyPkg,
+    annualPkg,
+  };
+}
 
 export default function PaywallScreen() {
   const router = useRouter();
-  const { restorePurchases, getSubscriptionStatus, sdkAvailable, paywallEnabled } = useSubscription();
+  const {
+    restorePurchases,
+    getSubscriptionStatus,
+    currentOffering,
+    paywallEnabled,
+  } = useSubscription();
   const [showingPaywall, setShowingPaywall] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const liveP = useMemo(() => extractPricing(currentOffering), [currentOffering]);
+
+  const monthlyPrice = liveP?.monthlyPrice ?? FALLBACK_PRICING.monthlyPrice;
+  const monthlyLabel = liveP?.monthlyPriceString ?? `$${FALLBACK_PRICING.monthlyPrice.toFixed(2)}`;
+  const annualPrice = liveP?.annualPrice ?? FALLBACK_PRICING.yearlyPrice;
+  const annualPerMonth = annualPrice / 12;
+  const annualLabel = liveP?.annualPriceString ?? `$${FALLBACK_PRICING.yearlyPrice.toFixed(2)}`;
+  const trialDays = liveP?.trialDays ?? FALLBACK_PRICING.trialDays;
+  const savingsPercent = monthlyPrice > 0
+    ? Math.round((1 - annualPerMonth / monthlyPrice) * 100)
+    : 33;
 
   const handleSubscribe = async () => {
     setError(null);
@@ -129,6 +185,7 @@ export default function PaywallScreen() {
             Unlock the full power of smart grocery management
           </Text>
 
+          {/* Feature comparison */}
           <View style={styles.comparisonCard}>
             <View style={styles.comparisonHeader}>
               <Text style={[styles.comparisonHeaderText, { flex: 1 }]}>Feature</Text>
@@ -153,26 +210,45 @@ export default function PaywallScreen() {
             ))}
           </View>
 
+          {/* Pricing — live from App Store Connect via RevenueCat, or fallback */}
           <View style={styles.pricingRow}>
-            <View style={styles.priceCard}>
-              <Text style={styles.priceLabel}>Monthly</Text>
-              <Text style={styles.priceAmount}>${MONTHLY_PRICE.toFixed(2)}</Text>
-              <Text style={styles.pricePeriod}>/month</Text>
-            </View>
-            <View style={[styles.priceCard, styles.priceCardHighlight]}>
-              <View style={styles.saveBadge}>
-                <Text style={styles.saveBadgeText}>Save 33%</Text>
+            {liveP?.monthlyPkg && (
+              <View style={styles.priceCard}>
+                <Text style={styles.priceLabel}>Monthly</Text>
+                <Text style={styles.priceAmount}>{monthlyLabel}</Text>
+                <Text style={styles.pricePeriod}>/month</Text>
               </View>
+            )}
+            {!liveP?.monthlyPkg && (
+              <View style={styles.priceCard}>
+                <Text style={styles.priceLabel}>Monthly</Text>
+                <Text style={styles.priceAmount}>${monthlyPrice.toFixed(2)}</Text>
+                <Text style={styles.pricePeriod}>/month</Text>
+              </View>
+            )}
+
+            <View style={[styles.priceCard, styles.priceCardHighlight]}>
+              {savingsPercent > 0 && (
+                <View style={styles.saveBadge}>
+                  <Text style={styles.saveBadgeText}>Save {savingsPercent}%</Text>
+                </View>
+              )}
               <Text style={styles.priceLabel}>Annual</Text>
-              <Text style={styles.priceAmount}>${(YEARLY_PRICE / 12).toFixed(2)}</Text>
+              <Text style={styles.priceAmount}>${annualPerMonth.toFixed(2)}</Text>
               <Text style={styles.pricePeriod}>/month</Text>
-              <Text style={styles.billedAs}>Billed ${YEARLY_PRICE.toFixed(2)}/year</Text>
+              <Text style={styles.billedAs}>Billed {annualLabel}/year</Text>
             </View>
           </View>
 
-          {TRIAL_DAYS > 0 && (
+          {trialDays > 0 && (
             <Text style={styles.trialText}>
-              Start with a {TRIAL_DAYS}-day free trial
+              Start with a {trialDays}-day free trial
+            </Text>
+          )}
+
+          {liveP && (
+            <Text style={styles.liveLabel}>
+              Prices from App Store{currentOffering ? ` (${currentOffering.identifier})` : ''}
             </Text>
           )}
 
@@ -190,7 +266,9 @@ export default function PaywallScreen() {
             {showingPaywall ? (
               <ActivityIndicator color="#6A9571" />
             ) : (
-              <Text style={styles.subscribeButtonText}>Start Free Trial</Text>
+              <Text style={styles.subscribeButtonText}>
+                {trialDays > 0 ? 'Start Free Trial' : 'Subscribe Now'}
+              </Text>
             )}
           </TouchableOpacity>
 
@@ -285,7 +363,8 @@ const styles = StyleSheet.create({
   priceAmount: { fontSize: 28, fontWeight: '800', color: '#FFFFFF' },
   pricePeriod: { fontSize: 13, color: 'rgba(255,255,255,0.7)' },
   billedAs: { fontSize: 11, color: 'rgba(255,255,255,0.5)', marginTop: 4 },
-  trialText: { fontSize: 15, fontWeight: '600', color: '#FFD700', marginBottom: 20, textAlign: 'center' },
+  trialText: { fontSize: 15, fontWeight: '600', color: '#FFD700', marginBottom: 8, textAlign: 'center' },
+  liveLabel: { fontSize: 11, color: 'rgba(255,255,255,0.4)', marginBottom: 16, textAlign: 'center' },
   errorContainer: { backgroundColor: 'rgba(255,107,107,0.2)', borderRadius: 10, padding: 12, marginBottom: 16, width: '100%', maxWidth: 380 },
   errorText: { fontSize: 14, color: '#FFD2D2', textAlign: 'center' },
   subscribeButton: {
