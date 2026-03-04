@@ -387,7 +387,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         })
       }
 
-      // IMPORTANT: Check if user was created FIRST, before checking errors
+      // IMPORTANT: Supabase returns a "fake" user with empty identities for duplicate emails
+      // (to prevent email enumeration). Detect this before treating it as a success.
+      if (authData?.user && Array.isArray(authData.user.identities) && authData.user.identities.length === 0) {
+        console.log('⚠️ Duplicate email detected (empty identities):', normalizedEmail)
+        return {
+          error: {
+            message: 'An account with this email already exists. Please sign in instead.',
+            code: 'user_already_registered',
+            status: 422,
+          } as any,
+        }
+      }
+
+      // Check if user was created FIRST, before checking errors
       // If user exists, account creation succeeded - email errors are non-blocking
       if (authData?.user) {
         // User was created successfully!

@@ -152,13 +152,12 @@ export default function AuthScreen() {
             error.status === 422 // Unprocessable Entity often means duplicate
           
           if (isDuplicateEmail) {
-            // Show error in the UI
-            setEmailError('This email is already registered. Please sign in instead.')
+            setEmailError('There is already an account associated with this email.')
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
             
             Alert.alert(
-              'Email Already Exists',
-              'This email is already registered. Please sign in instead.',
+              'Account Already Exists',
+              'There is already an account associated with this email. Please try signing in instead.',
               [
                 {
                   text: 'Sign In',
@@ -171,7 +170,7 @@ export default function AuthScreen() {
                   style: 'default',
                 },
                 {
-                  text: 'OK',
+                  text: 'Cancel',
                   style: 'cancel',
                 },
               ]

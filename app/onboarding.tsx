@@ -13,6 +13,7 @@ import {
   Modal,
   FlatList,
   ActivityIndicator,
+  Alert,
 } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { StatusBar } from 'expo-status-bar'
@@ -193,7 +194,32 @@ export default function OnboardingScreen() {
       setAccountLoading(false)
 
       if (signUpError) {
-        showToast(signUpError.message || 'Sign up failed. Please try again.', { kind: 'error', durationMs: 4000 })
+        const errMsg = (signUpError.message || '').toLowerCase()
+        const isDuplicate =
+          errMsg.includes('already') ||
+          errMsg.includes('already registered') ||
+          errMsg.includes('already exists') ||
+          signUpError.code === 'user_already_registered' ||
+          signUpError.status === 422
+
+        if (isDuplicate) {
+          setAccountEmailError('There is already an account associated with this email.')
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning)
+          Alert.alert(
+            'Account Already Exists',
+            'There is already an account associated with this email. Please try signing in instead.',
+            [
+              {
+                text: 'Sign In',
+                onPress: () => router.replace('/auth'),
+                style: 'default',
+              },
+              { text: 'Cancel', style: 'cancel' },
+            ]
+          )
+        } else {
+          showToast(signUpError.message || 'Sign up failed. Please try again.', { kind: 'error', durationMs: 4000 })
+        }
         return
       }
       if (emailWarning) {
