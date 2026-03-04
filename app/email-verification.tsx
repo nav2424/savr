@@ -1,5 +1,5 @@
-// SAVR Email Verification Screen
-import React, { useState, useEffect } from 'react'
+// SAVR Email Verification Screen — OTP code input with link fallback
+import React, { useState, useEffect, useRef } from 'react'
 import {
   View,
   Text,
@@ -7,6 +7,8 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
+  TextInput,
+  Keyboard,
 } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { LinearGradient } from 'expo-linear-gradient'
@@ -21,6 +23,7 @@ import { getSmtpErrorMessage, getSmtpSetupInstructions } from '../lib/smtpDiagno
 import { useToast } from '../lib/ToastContext'
 
 const PENDING_EMAIL_STORAGE_KEY = 'email_verification_pending_email_v1'
+const CODE_LENGTH = 6
 
 export default function EmailVerificationScreen() {
   const router = useRouter()
@@ -29,253 +32,171 @@ export default function EmailVerificationScreen() {
   const { showToast } = useToast()
   const [checking, setChecking] = useState(false)
   const [resending, setResending] = useState(false)
+  const [verifying, setVerifying] = useState(false)
   const [userEmail, setUserEmail] = useState<string>('')
   const [processingLink, setProcessingLink] = useState(false)
-  const [resendCooldown, setResendCooldown] = useState(0) // Cooldown in seconds
-  const [lastResendTime, setLastResendTime] = useState<number | null>(null)
+  const [resendCooldown, setResendCooldown] = useState(0)
+  const [code, setCode] = useState<string[]>(Array(CODE_LENGTH).fill(''))
+  const [codeError, setCodeError] = useState<string | null>(null)
+  const inputRefs = useRef<(TextInput | null)[]>([])
 
-  // Get user email from multiple sources and persist for resend (session may be missing for unverified users)
+  // Get user email from multiple sources
   useEffect(() => {
     const getUserEmail = async () => {
-      // First priority: email from route params (passed from signup/onboarding)
       let email = params.email || ''
-
-      // Second priority: try from context
-      if (!email) {
-        email = session?.user?.email || user?.email || ''
-      }
-
-      // Third priority: try persisted email (from previous visit to this screen)
+      if (!email) email = session?.user?.email || user?.email || ''
       if (!email) {
         try {
           const stored = await AsyncStorage.getItem(PENDING_EMAIL_STORAGE_KEY)
           if (stored) email = stored
-        } catch {
-          // ignore
-        }
+        } catch { /* ignore */ }
       }
-
-      // Fourth priority: try getting from Supabase directly (if session exists)
       if (!email) {
         try {
-          const { data: { session: currentSession } } = await supabase.auth.getSession()
-          if (currentSession?.user?.email) {
-            email = currentSession.user.email
-          }
-        } catch (error) {
-          if (!error?.message?.includes('Auth session missing')) {
-            console.error('Error getting session email:', error)
-          }
-        }
+          const { data: { session: s } } = await supabase.auth.getSession()
+          if (s?.user?.email) email = s.user.email
+        } catch { /* ignore */ }
       }
-
-      // Fifth priority: try getting user (might work even without session)
-      if (!email) {
-        try {
-          const { data: { user: currentUser } } = await supabase.auth.getUser()
-          email = currentUser?.email || ''
-        } catch (error) {
-          if (!error?.message?.includes('Auth session missing')) {
-            console.error('Error getting user email:', error)
-          }
-        }
-      }
-
       const finalEmail = email || ''
       setUserEmail(finalEmail)
-      // Persist so resend works even if session is missing (e.g. app was closed and reopened)
       if (finalEmail) {
-        try {
-          await AsyncStorage.setItem(PENDING_EMAIL_STORAGE_KEY, finalEmail)
-        } catch {
-          // non-blocking
-        }
+        try { await AsyncStorage.setItem(PENDING_EMAIL_STORAGE_KEY, finalEmail) } catch { /* non-blocking */ }
       }
     }
-
     getUserEmail()
   }, [session, user, params.email])
 
-  // Handle deep link for email verification
+  // Deep link fallback (if user still clicks the email link)
   useEffect(() => {
-    const handleDeepLink = async () => {
-      try {
-        // Get initial URL (if app was opened from a link)
-        const initialUrl = await Linking.getInitialURL()
-        if (initialUrl) {
-          console.log('📧 App opened from deep link:', initialUrl)
-          await processVerificationLink(initialUrl)
-        }
-
-        // Listen for deep links while app is running
-        const subscription = Linking.addEventListener('url', async (event) => {
-          console.log('📧 Deep link received:', event.url)
-          await processVerificationLink(event.url)
-        })
-
-        return () => {
-          subscription.remove()
-        }
-      } catch (error) {
-        console.error('Error setting up deep link listener:', error)
-      }
-    }
-
     const processVerificationLink = async (url: string) => {
       try {
         setProcessingLink(true)
-        console.log('📧 Processing verification link:', url)
-
-        // Establish session from URL tokens so user is signed in when returning from email link
         const sessionCreated = await createSessionFromUrl(url)
         if (sessionCreated) {
-          console.log('✅ Session created from verification link')
-        }
-
-        const { data: { session }, error } = await supabase.auth.getSession()
-        if (error) {
-          console.error('Error getting session from link:', error)
-          return
-        }
-        if (session) {
-          const { data: { user } } = await supabase.auth.getUser()
-          if (user?.email_confirmed_at) {
-            console.log('✅ Email verified via deep link!')
-            try { await AsyncStorage.removeItem(PENDING_EMAIL_STORAGE_KEY) } catch { /* non-blocking */ }
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-            router.replace('/(tabs)')
-          }
-        }
-      } catch (error) {
-        console.error('Error processing verification link:', error)
-      } finally {
-        setProcessingLink(false)
-      }
-    }
-
-    handleDeepLink()
-  }, [router])
-
-  // Check verification status immediately and periodically
-  useEffect(() => {
-    let isMounted = true
-    
-    const checkVerification = async () => {
-      if (!isMounted) return
-      
-      setChecking(true)
-      try {
-        // First check if we have a session
-        const { data: { session: currentSession } } = await supabase.auth.getSession()
-        
-        // If we have a session, try to get user
-        if (currentSession) {
-          const { data: { user: currentUser }, error } = await supabase.auth.getUser()
-          
-          if (error) {
-            // Suppress AuthSessionMissingError - it's expected in some cases
-            if (!error.message?.includes('Auth session missing')) {
-              console.error('Error getting user:', error.message)
-            }
-            setChecking(false)
-            return
-          }
-          
-          // Update email if we got it from the user object
-          if (currentUser?.email && !userEmail) {
-            setUserEmail(currentUser.email)
-          }
-          
-          if (currentUser?.email_confirmed_at) {
-            // Email is verified, navigate to tabs immediately
-            console.log('✅ Email already verified - redirecting to app')
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-            router.replace('/(tabs)')
-            return
-          }
-        } else {
-          // No session - this is normal for unverified users
-          // Try to get user anyway (might work in some cases)
-          try {
-            const { data: { user: currentUser }, error } = await supabase.auth.getUser()
-            
-            // AuthSessionMissingError is expected when email isn't verified yet
-            if (error && error.message?.includes('Auth session missing')) {
-              // This is normal - user hasn't verified email yet, just return silently
-              setChecking(false)
-              return
-            }
-            
-            if (error) {
-              // Other errors - log but don't spam
-              if (!error.message?.includes('Auth session missing')) {
-                console.error('Error getting user:', error.message)
-              }
-              setChecking(false)
-              return
-            }
-            
-            // Update email if we got it from the user object
-            if (currentUser?.email && !userEmail) {
-              setUserEmail(currentUser.email)
-            }
-            
-            // Check if email is verified
-            if (currentUser?.email_confirmed_at) {
-              console.log('✅ Email already verified - redirecting to app')
+          const { data: { session: s } } = await supabase.auth.getSession()
+          if (s) {
+            const { data: { user: u } } = await supabase.auth.getUser()
+            if (u?.email_confirmed_at) {
+              try { await AsyncStorage.removeItem(PENDING_EMAIL_STORAGE_KEY) } catch { /* non-blocking */ }
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
               router.replace('/(tabs)')
-              return
-            }
-          } catch (error: any) {
-            // Suppress AuthSessionMissingError - it's expected
-            if (!error?.message?.includes('Auth session missing')) {
-              console.error('Error checking verification:', error)
             }
           }
         }
-      } catch (error: any) {
-        // Suppress AuthSessionMissingError
-        if (!error?.message?.includes('Auth session missing')) {
-          console.error('Error checking verification:', error)
-        }
-      } finally {
-        if (isMounted) {
-          setChecking(false)
-        }
-      }
+      } catch { /* ignore */ } finally { setProcessingLink(false) }
     }
 
-    // Check immediately when screen loads (no delay)
-    checkVerification()
-
-    // Also check periodically (every 3 seconds) in case verification happens while on this screen
-    const interval = setInterval(() => {
-      if (isMounted) {
-        checkVerification()
-      }
-    }, 3000)
-
-    return () => {
-      isMounted = false
-      clearInterval(interval)
+    const setup = async () => {
+      const initialUrl = await Linking.getInitialURL()
+      if (initialUrl) await processVerificationLink(initialUrl)
+      const sub = Linking.addEventListener('url', (e) => processVerificationLink(e.url))
+      return () => sub.remove()
     }
-  }, [router, userEmail, session, user])
+    setup()
+  }, [router])
 
-  // Cooldown timer effect
+  // Auto-redirect if already verified
+  useEffect(() => {
+    let mounted = true
+    const check = async () => {
+      try {
+        const { data: { session: s } } = await supabase.auth.getSession()
+        if (s) {
+          const { data: { user: u } } = await supabase.auth.getUser()
+          if (u?.email_confirmed_at && mounted) {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+            router.replace('/(tabs)')
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    check()
+    const interval = setInterval(check, 5000)
+    return () => { mounted = false; clearInterval(interval) }
+  }, [router])
+
+  // Cooldown timer
   useEffect(() => {
     if (resendCooldown > 0) {
-      const timer = setInterval(() => {
-        setResendCooldown((prev) => {
-          if (prev <= 1) {
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
-      return () => clearInterval(timer)
+      const t = setInterval(() => setResendCooldown((p) => (p <= 1 ? 0 : p - 1)), 1000)
+      return () => clearInterval(t)
     }
   }, [resendCooldown])
+
+  const handleCodeChange = (text: string, index: number) => {
+    setCodeError(null)
+    const digit = text.replace(/[^0-9]/g, '').slice(-1)
+    const next = [...code]
+    next[index] = digit
+    setCode(next)
+
+    if (digit && index < CODE_LENGTH - 1) {
+      inputRefs.current[index + 1]?.focus()
+    }
+
+    if (next.every((d) => d !== '') && next.join('').length === CODE_LENGTH) {
+      Keyboard.dismiss()
+      verifyCode(next.join(''))
+    }
+  }
+
+  const handleKeyPress = (e: any, index: number) => {
+    if (e.nativeEvent.key === 'Backspace' && !code[index] && index > 0) {
+      inputRefs.current[index - 1]?.focus()
+      const next = [...code]
+      next[index - 1] = ''
+      setCode(next)
+    }
+  }
+
+  const verifyCode = async (otp: string) => {
+    if (!userEmail) {
+      setCodeError('Email not found. Please go back and sign up again.')
+      return
+    }
+
+    setVerifying(true)
+    setCodeError(null)
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+
+    try {
+      const { data, error } = await supabase.auth.verifyOtp({
+        email: userEmail.trim().toLowerCase(),
+        token: otp,
+        type: 'signup',
+      })
+
+      if (error) {
+        const msg = error.message?.toLowerCase() || ''
+        if (msg.includes('expired') || msg.includes('invalid')) {
+          setCodeError('Invalid or expired code. Please try again or resend.')
+        } else if (msg.includes('rate') || msg.includes('too many')) {
+          setCodeError('Too many attempts. Please wait a moment.')
+          setResendCooldown(30)
+        } else {
+          setCodeError(error.message || 'Verification failed. Please try again.')
+        }
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+        setCode(Array(CODE_LENGTH).fill(''))
+        inputRefs.current[0]?.focus()
+        return
+      }
+
+      if (data?.session) {
+        try { await AsyncStorage.removeItem(PENDING_EMAIL_STORAGE_KEY) } catch { /* non-blocking */ }
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+        showToast('Email verified!', { kind: 'success' })
+        router.replace('/(tabs)')
+      } else {
+        setCodeError('Verification succeeded but session was not created. Please sign in.')
+      }
+    } catch (err: any) {
+      setCodeError(err?.message || 'Something went wrong. Please try again.')
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+    } finally {
+      setVerifying(false)
+    }
+  }
 
   const handleResendEmail = async () => {
     if (resendCooldown > 0) {
@@ -283,39 +204,16 @@ export default function EmailVerificationScreen() {
       return
     }
 
-    // Resolve email: state first, then persisted, then Supabase (session may be missing for unverified users)
     let emailToUse = userEmail?.trim() || ''
     if (!emailToUse) {
       try {
         const stored = await AsyncStorage.getItem(PENDING_EMAIL_STORAGE_KEY)
         if (stored?.trim()) emailToUse = stored.trim()
-      } catch {
-        // ignore
-      }
-    }
-    if (!emailToUse) {
-      try {
-        const { data: { user: currentUser } } = await supabase.auth.getUser()
-        emailToUse = currentUser?.email?.trim() || ''
-      } catch {
-        // ignore
-      }
-    }
-    if (!emailToUse) {
-      try {
-        const { data: { session: currentSession } } = await supabase.auth.getSession()
-        emailToUse = currentSession?.user?.email?.trim() || ''
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
     }
 
     if (!emailToUse) {
-      Alert.alert(
-        'Email needed',
-        'We couldn’t find your email. Please go back and sign up again, or enter your email on the next screen.',
-        [{ text: 'OK' }]
-      )
+      Alert.alert('Email needed', 'We couldn\'t find your email. Please go back and sign up again.')
       return
     }
 
@@ -323,115 +221,43 @@ export default function EmailVerificationScreen() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
 
     try {
-      const { data: { user: currentUser } } = await supabase.auth.getUser()
-      if (currentUser?.email_confirmed_at) {
-        setResending(false)
-        try { await AsyncStorage.removeItem(PENDING_EMAIL_STORAGE_KEY) } catch { /* non-blocking */ }
-        showToast('Email already verified. Taking you in…', { kind: 'success' })
-        router.replace('/(tabs)')
-        return
-      }
-
       const emailRedirectTo = getEmailVerificationRedirectUrl()
-      let error = (await supabase.auth.resend({
+      const { error } = await supabase.auth.resend({
         type: 'signup',
         email: emailToUse,
         options: { emailRedirectTo },
-      })).error
-
-      // One retry on transient failure (no retry for rate limit, already verified, not found, SMTP config)
-      if (error) {
-        const errorMessage = error.message?.toLowerCase() || ''
-        const errorCode = String(error.status ?? error.code ?? '')
-        const isRateLimit =
-          errorMessage.includes('rate limit') ||
-          errorMessage.includes('too many requests') ||
-          errorMessage.includes('too many') ||
-          errorMessage.includes('please wait') ||
-          errorCode === '429'
-        const isRetryable =
-          !isRateLimit &&
-          !errorMessage.includes('already verified') &&
-          !errorMessage.includes('email already confirmed') &&
-          !errorMessage.includes('email not found') &&
-          !errorMessage.includes('user not found') &&
-          !errorMessage.includes('invalid email') &&
-          !getSmtpErrorMessage(error).startsWith('SMTP_') &&
-          !getSmtpErrorMessage(error).startsWith('RESEND_')
-
-        if (isRetryable) {
-          await new Promise(r => setTimeout(r, 1000))
-          error = (await supabase.auth.resend({
-            type: 'signup',
-            email: emailToUse,
-            options: { emailRedirectTo },
-          })).error
-        }
-      }
+      })
 
       if (error) {
-        const errorMessage = error.message?.toLowerCase() || ''
-        const errorCode = String(error.status ?? error.code ?? '')
-        const isRateLimit =
-          errorMessage.includes('rate limit') ||
-          errorMessage.includes('too many requests') ||
-          errorMessage.includes('too many') ||
-          errorMessage.includes('please wait') ||
-          errorCode === '429'
-
-        if (isRateLimit) {
+        const msg = error.message?.toLowerCase() || ''
+        if (msg.includes('rate limit') || msg.includes('too many') || String(error.status) === '429') {
           setResendCooldown(60)
-          showToast('Too many attempts. Please wait 1 minute.', { kind: 'warning', durationMs: 4000 })
-          return
-        }
-        if (errorMessage.includes('already verified') || errorMessage.includes('email already confirmed')) {
+          showToast('Too many attempts. Please wait 1 minute.', { kind: 'warning' })
+        } else if (msg.includes('already verified') || msg.includes('already confirmed')) {
           try { await AsyncStorage.removeItem(PENDING_EMAIL_STORAGE_KEY) } catch { /* non-blocking */ }
           showToast('Email already verified.', { kind: 'success' })
           router.replace('/(tabs)')
-          return
-        }
-        if (errorMessage.includes('email not found') || errorMessage.includes('user not found') || errorMessage.includes('invalid email')) {
-          Alert.alert(
-            'Email not found',
-            'This email isn’t linked to an account. Please sign up again.',
-            [{ text: 'OK', onPress: () => router.replace('/auth') }]
-          )
-          return
-        }
-
-        const smtpErrorType = getSmtpErrorMessage(error)
-        const isSmtpIssue = smtpErrorType.startsWith('SMTP_') || smtpErrorType.startsWith('RESEND_')
-        if (isSmtpIssue) {
-          const instructions = getSmtpSetupInstructions(smtpErrorType)
-          Alert.alert(
-            'Email not configured',
-            `Verification email couldn’t be sent.\n\n${instructions.join('\n')}\n\nSee SMTP_SETUP_COMPLETE.md for setup.`,
-            [{ text: 'OK' }]
-          )
         } else {
-          showToast(error.message || 'Couldn’t send email. Try again.', { kind: 'error', durationMs: 4000 })
+          showToast(error.message || 'Couldn\'t send email. Try again.', { kind: 'error' })
         }
         return
       }
 
       setResendCooldown(30)
+      setCode(Array(CODE_LENGTH).fill(''))
+      setCodeError(null)
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-      showToast('Verification email sent. Check inbox and spam.', { kind: 'success', durationMs: 3500 })
+      showToast('New verification code sent! Check your inbox.', { kind: 'success' })
     } catch (err: any) {
-      console.error('Resend email exception:', err)
-      showToast(err?.message || 'Something went wrong. Try again.', { kind: 'error', durationMs: 3500 })
+      showToast(err?.message || 'Something went wrong. Try again.', { kind: 'error' })
     } finally {
       setResending(false)
     }
   }
 
-  const displayEmail = userEmail || 'your email'
-
   return (
     <View style={styles.container}>
       <StatusBar style="dark" />
-      
-      {/* Background */}
       <LinearGradient
         colors={['#FAF8F3', '#F0F7F2', '#E8F4ED']}
         start={{ x: 0, y: 0 }}
@@ -446,43 +272,49 @@ export default function EmailVerificationScreen() {
 
         <Text style={styles.title}>Verify Your Email</Text>
         <Text style={styles.subtitle}>
-          {userEmail ? 'We\'ve sent a verification link to' : 'Please verify your email address'}
+          Enter the 6-digit code sent to
         </Text>
-        {userEmail && <Text style={styles.email}>{displayEmail}</Text>}
+        {userEmail ? (
+          <Text style={styles.email}>{userEmail}</Text>
+        ) : (
+          <Text style={styles.subtitleFaded}>your email address</Text>
+        )}
 
-        <Text style={styles.instructions}>
-          Please check your inbox and click the verification link to continue.
-          {'\n\n'}Don’t see it? Check your Junk/Spam (and Promotions) folder.
-        </Text>
+        {/* OTP Code Input */}
+        <View style={styles.codeContainer}>
+          {code.map((digit, i) => (
+            <TextInput
+              key={i}
+              ref={(el) => { inputRefs.current[i] = el }}
+              style={[
+                styles.codeInput,
+                digit ? styles.codeInputFilled : null,
+                codeError ? styles.codeInputError : null,
+              ]}
+              value={digit}
+              onChangeText={(text) => handleCodeChange(text, i)}
+              onKeyPress={(e) => handleKeyPress(e, i)}
+              keyboardType="number-pad"
+              maxLength={1}
+              selectTextOnFocus
+              editable={!verifying}
+              autoFocus={i === 0}
+            />
+          ))}
+        </View>
 
-        {checking && (
-          <View style={styles.checkingContainer}>
+        {codeError && (
+          <Text style={styles.errorText}>{codeError}</Text>
+        )}
+
+        {verifying && (
+          <View style={styles.verifyingContainer}>
             <ActivityIndicator size="small" color="#6A9571" />
-            <Text style={styles.checkingText}>Checking verification status...</Text>
+            <Text style={styles.verifyingText}>Verifying...</Text>
           </View>
         )}
 
-        <Pressable
-          style={({ pressed }) => [
-            styles.verifyButton,
-            pressed && styles.verifyButtonPressed,
-          ]}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
-            const mailto = userEmail ? `mailto:${userEmail}` : 'mailto:'
-            Linking.openURL(mailto).catch(() => {})
-          }}
-        >
-          <LinearGradient
-            colors={['#5A8A6A', '#6A9571', '#7BA67D']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.verifyButtonGradient}
-          >
-            <Text style={styles.verifyButtonText}>Check Your Inbox</Text>
-          </LinearGradient>
-        </Pressable>
-
+        {/* Resend */}
         <Pressable
           style={({ pressed }) => [
             styles.resendButton,
@@ -495,28 +327,26 @@ export default function EmailVerificationScreen() {
           {resending ? (
             <ActivityIndicator size="small" color="#6A9571" />
           ) : resendCooldown > 0 ? (
-            <Text style={styles.resendLinkText}>Resend in {resendCooldown}s</Text>
+            <Text style={styles.resendLinkText}>Resend code in {resendCooldown}s</Text>
           ) : (
-            <Text style={styles.resendLinkText}>Didn't receive it? Resend verification email</Text>
+            <Text style={styles.resendLinkText}>Didn't receive it? Resend code</Text>
           )}
         </Pressable>
 
         <Text style={styles.hint}>
-          Once you verify your email, you'll automatically be taken to the app.
+          Check your inbox and spam folder.{'\n'}
+          You can also tap the link in the email if you prefer.
         </Text>
 
         {!userEmail && (
           <Pressable
-            style={({ pressed }) => [
-              styles.backButton,
-              pressed && styles.backButtonPressed,
-            ]}
+            style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
               router.replace('/auth')
             }}
           >
-            <Text style={styles.backButtonText}>Back</Text>
+            <Text style={styles.backButtonText}>Back to Sign In</Text>
           </Pressable>
         )}
       </View>
@@ -525,117 +355,105 @@ export default function EmailVerificationScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  gradientBackground: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-  },
+  container: { flex: 1 },
+  gradientBackground: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   content: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 32,
   },
-  iconContainer: {
-    marginBottom: 32,
-  },
-  icon: {
-    fontSize: 80,
-    textAlign: 'center',
-  },
+  iconContainer: { marginBottom: 24 },
+  icon: { fontSize: 64, textAlign: 'center' },
   title: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: '800',
     color: '#1A1A1A',
-    marginBottom: 16,
+    marginBottom: 12,
     textAlign: 'center',
     letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 17,
-    color: '#666666',
-    textAlign: 'center',
-    marginBottom: 8,
-    fontWeight: '400',
-  },
-  email: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#6A9571',
-    textAlign: 'center',
-    marginBottom: 32,
-  },
-  instructions: {
     fontSize: 16,
     color: '#666666',
     textAlign: 'center',
-    lineHeight: 24,
-    marginBottom: 32,
-    paddingHorizontal: 20,
+    marginBottom: 4,
   },
-  checkingContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+  subtitleFaded: {
+    fontSize: 16,
+    color: '#999999',
+    textAlign: 'center',
     marginBottom: 24,
   },
-  checkingText: {
-    fontSize: 14,
-    color: '#666666',
-    fontWeight: '500',
-  },
-  verifyButton: {
-    borderRadius: 18,
-    overflow: 'hidden',
-    marginBottom: 16,
-    shadowColor: '#6A9571',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 8,
-    elevation: 6,
-  },
-  verifyButtonGradient: {
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 200,
-  },
-  verifyButtonPressed: {
-    transform: [{ scale: 0.98 }],
-  },
-  verifyButtonText: {
+  email: {
     fontSize: 17,
     fontWeight: '700',
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
+    color: '#6A9571',
+    textAlign: 'center',
+    marginBottom: 28,
+  },
+  codeContainer: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginBottom: 16,
+  },
+  codeInput: {
+    width: 48,
+    height: 56,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#E0E0E0',
+    backgroundColor: '#FFFFFF',
+    textAlign: 'center',
+    fontSize: 24,
+    fontWeight: '700',
+    color: '#1A1A1A',
+    marginHorizontal: 4,
+  },
+  codeInputFilled: {
+    borderColor: '#6A9571',
+    backgroundColor: '#F0F7F2',
+  },
+  codeInputError: {
+    borderColor: '#FF3B30',
+    backgroundColor: '#FFF5F5',
+  },
+  errorText: {
+    fontSize: 14,
+    color: '#FF3B30',
+    textAlign: 'center',
+    marginBottom: 16,
+    fontWeight: '500',
+    paddingHorizontal: 20,
+  },
+  verifyingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  verifyingText: {
+    fontSize: 14,
+    color: '#6A9571',
+    fontWeight: '600',
+    marginLeft: 8,
   },
   resendButton: {
     paddingVertical: 12,
     paddingHorizontal: 20,
-    marginBottom: 24,
+    marginBottom: 20,
   },
-  resendButtonPressed: {
-    opacity: 0.7,
-  },
-  resendButtonDisabled: {
-    opacity: 0.5,
-  },
+  resendButtonPressed: { opacity: 0.7 },
+  resendButtonDisabled: { opacity: 0.5 },
   resendLinkText: {
     fontSize: 15,
     fontWeight: '600',
     color: '#6A9571',
   },
   hint: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#8E8E93',
     textAlign: 'center',
-    fontStyle: 'italic',
+    lineHeight: 20,
     paddingHorizontal: 20,
   },
   backButton: {
@@ -643,9 +461,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 24,
   },
-  backButtonPressed: {
-    opacity: 0.7,
-  },
+  backButtonPressed: { opacity: 0.7 },
   backButtonText: {
     fontSize: 15,
     fontWeight: '600',
