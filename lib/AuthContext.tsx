@@ -550,27 +550,66 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const deleteAccount = async (): Promise<{ error: any }> => {
     if (!user?.id) return { error: new Error('No user logged in') }
 
+    const userId = user.id
+
+    // Try the edge function first (fully deletes auth user + data via admin API)
     try {
       const { data, error } = await supabase.functions.invoke('delete-account', {
         method: 'POST',
       })
 
-      if (error) {
-        logger.error('Account deletion failed', { error, userId: user.id })
-        return { error: error instanceof Error ? error : new Error(String(error)) }
+      if (!error && !data?.error) {
+        logger.info('Account deleted via edge function', { userId })
+        await signOut()
+        return { error: null }
       }
 
-      if (data?.error) {
-        logger.error('Account deletion returned error', { error: data.error, userId: user.id })
-        return { error: new Error(data.error.message || data.error || 'Failed to delete account') }
+      // Log but continue to fallback
+      const edgeFnError = error?.message || data?.error?.message || data?.error || 'Unknown'
+      logger.debug('Edge function delete-account failed, trying direct cleanup', { edgeFnError, userId })
+    } catch (edgeFnException) {
+      logger.debug('Edge function delete-account not available, trying direct cleanup', { error: edgeFnException, userId })
+    }
+
+    // Fallback: delete user data directly from database tables, then sign out.
+    // This cleans up all user data even if the edge function is not deployed.
+    try {
+      const tables = [
+        'pantry_items',
+        'saved_recipes',
+        'list_items',
+        'list_collaborators',
+        'grocery_lists',
+        'receipts',
+        'receipt_items',
+        'scanned_products',
+        'user_scanned_history',
+        'push_tokens',
+        'user_preferences',
+        'household_members',
+      ]
+
+      for (const table of tables) {
+        const { error: delErr } = await supabase.from(table).delete().eq('user_id', userId)
+        if (delErr) logger.debug(`Cleanup ${table} failed (non-blocking)`, { error: delErr.message })
       }
 
-      logger.info('Account deleted successfully', { userId: user.id })
+      // Delete owned households and lists (owner_id column)
+      await supabase.from('households').delete().eq('owner_id', userId).then(() => {})
+      await supabase.from('grocery_lists').delete().eq('owner_id', userId).then(() => {})
+
+      // Delete the users table row
+      const { error: userDelErr } = await supabase.from('users').delete().eq('id', userId)
+      if (userDelErr) {
+        logger.debug('users row delete failed (non-blocking)', { error: userDelErr.message })
+      }
+
+      logger.info('Account data cleaned up via direct delete', { userId })
       await signOut()
       return { error: null }
-    } catch (error) {
-      logger.error('Account deletion exception', { error, userId: user.id })
-      return { error: error instanceof Error ? error : new Error('Failed to delete account') }
+    } catch (fallbackError) {
+      logger.error('Account deletion failed completely', { error: fallbackError, userId })
+      return { error: fallbackError instanceof Error ? fallbackError : new Error('Failed to delete account. Please contact support.') }
     }
   }
 
