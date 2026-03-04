@@ -17,7 +17,7 @@ import { ErrorBoundary, MinimalErrorFallback } from "../lib/ErrorBoundary"
 import { validateConfiguration } from "../lib/ConfigValidator"
 import { logger } from "../lib/Logger"
 import { config } from "../config"
-import { initializeRevenueCat } from "../lib/revenuecat"
+// RevenueCat init is handled by SubscriptionProvider
 import * as Notifications from 'expo-notifications'
 
 // Feature-flagged: set EXPO_PUBLIC_ENABLE_PAYWALL=true to enable
@@ -181,23 +181,8 @@ export default function Root() {
     }
   }, [])
 
-  // Initialize RevenueCat once at app startup (when paywall enabled). EAS dev build / TestFlight only.
-  useEffect(() => {
-    if (!config.enablePaywall) return
-    let cancelled = false
-    initializeRevenueCat()
-      .then(() => {
-        if (!cancelled && __DEV__) {
-          logger.info('[RevenueCat] Initialized')
-        }
-      })
-      .catch((e) => {
-        if (!cancelled && __DEV__) {
-          logger.error('RevenueCat init failed', { error: e })
-        }
-      })
-    return () => { cancelled = true }
-  }, [])
+  // RevenueCat initialization is handled by SubscriptionProvider.
+  // No separate init needed here.
 
   const app = (
     <ProvidersWrapper>

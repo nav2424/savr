@@ -27,16 +27,27 @@ import {
 const { width } = Dimensions.get('window')
 const responsiveDims = getResponsiveDimensions()
 
-// Settings menu items
-const getSettingsItems = () => {
-  const items = [
-    {
+// Settings menu items – subscription entry only shown when paywall is enabled
+const getSettingsItems = (paywallEnabled: boolean) => {
+  const items: Array<{
+    id: string
+    title: string
+    description: string
+    icon: string
+    route: string
+  }> = []
+
+  if (paywallEnabled) {
+    items.push({
       id: 'subscription',
       title: 'Subscription',
       description: 'SAVR Monthly, SAVR Annual – manage or upgrade',
       icon: '⭐',
       route: '/subscription-management',
-    },
+    })
+  }
+
+  items.push(
     {
       id: 'profile',
       title: 'Profile & Settings',
@@ -58,7 +69,7 @@ const getSettingsItems = () => {
       icon: '🧾',
       route: '/receipts-history',
     },
-  ]
+  )
   return items
 }
 
@@ -174,12 +185,12 @@ export default function MoreScreen() {
               end={{ x: 1, y: 1 }}
               style={styles.settingsCardGradient}
             >
-              {getSettingsItems().map((item, index) => (
+              {getSettingsItems(config.enablePaywall).map((item, index) => (
                 <Pressable
                   key={item.id}
                   style={[
                     styles.settingsItem,
-                    index === getSettingsItems().length - 1 && styles.settingsItemLast
+                    index === getSettingsItems(config.enablePaywall).length - 1 && styles.settingsItemLast
                   ]}
                   onPress={() => handleItemPress(item)}
                 >

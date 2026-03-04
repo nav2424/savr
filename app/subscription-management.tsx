@@ -25,10 +25,10 @@ import { useSubscription } from '../lib/SubscriptionContext';
 import {
   showHostedPaywall,
   isPro,
+  isConfigured,
   getCurrentOfferingOrThrow,
   logPaywallDiagnostics,
 } from '../lib/revenuecat';
-import { PAYWALL_RESULT } from 'react-native-purchases-ui';
 
 export default function SubscriptionManagementScreen() {
   const router = useRouter();
@@ -39,6 +39,8 @@ export default function SubscriptionManagementScreen() {
     restorePurchases,
     presentCustomerCenter,
     getSubscriptionStatus,
+    paywallEnabled,
+    sdkAvailable,
   } = useSubscription();
 
   const [restoring, setRestoring] = useState(false);
@@ -55,6 +57,10 @@ export default function SubscriptionManagementScreen() {
   const willRenew = activeEntitlement?.willRenew || false;
 
   const handleRestore = async () => {
+    if (!isConfigured()) {
+      Alert.alert('Not Available', 'Purchases are only available in the iOS and Android apps.');
+      return;
+    }
     setRestoring(true);
     const result = await restorePurchases();
     setRestoring(false);
@@ -62,30 +68,39 @@ export default function SubscriptionManagementScreen() {
     if (result.success) {
       Alert.alert('Success', 'Your subscription has been restored!');
     } else {
-      Alert.alert('No Subscription Found', 'No active subscription to restore.');
+      Alert.alert('No Subscription Found', result.error || 'No active subscription to restore.');
     }
   };
 
   const handleManageSubscription = async () => {
     try {
-      await presentCustomerCenter({
-        callbacks: {
-          onRestoreCompleted: async () => {
-            await restorePurchases();
-          },
-        },
-      });
+      await presentCustomerCenter();
     } catch {
       if (Platform.OS === 'ios') {
         Linking.openURL('https://apps.apple.com/account/subscriptions');
-      } else {
+      } else if (Platform.OS === 'android') {
         Linking.openURL('https://play.google.com/store/account/subscriptions');
+      } else {
+        Alert.alert(
+          'Manage Subscription',
+          'Please manage your subscription from the iOS App Store or Google Play Store.'
+        );
       }
     }
   };
 
   const handleUpgrade = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+    if (!isConfigured()) {
+      Alert.alert(
+        'Not Available',
+        Platform.OS === 'web'
+          ? 'Subscriptions are only available in the iOS and Android apps.'
+          : 'Unable to load subscription options. Please check your internet connection.'
+      );
+      return;
+    }
 
     try {
       const offering = await getCurrentOfferingOrThrow();
@@ -99,9 +114,9 @@ export default function SubscriptionManagementScreen() {
         logPaywallDiagnostics(offering, isProAfter);
       }
 
-      if (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) {
+      if (result === 'PURCHASED' || result === 'RESTORED') {
         await getSubscriptionStatus();
-      } else if (result === PAYWALL_RESULT.NOT_PRESENTED) {
+      } else if (result === 'NOT_PRESENTED') {
         Alert.alert(
           'Unable to Load Subscription',
           'The subscription paywall could not be loaded. Ensure RevenueCat API keys are set and your offering is Current in the dashboard.'
