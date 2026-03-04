@@ -3,6 +3,9 @@
  *
  * To enable paywall: set EXPO_PUBLIC_ENABLE_PAYWALL=true (EAS secrets or .env).
  * Entitlement: "pro". Uses RevenueCat hosted paywall only.
+ *
+ * When the paywall feature flag is off, or on unsupported platforms (web),
+ * all users are treated as subscribed so the app works without restrictions.
  */
 
 import React, {
@@ -18,27 +21,24 @@ import {
   PurchasesPackage,
   CustomerInfo,
 } from 'react-native-purchases';
-import RevenueCatUI, {
-  PAYWALL_RESULT,
-  type PresentPaywallParams,
-  type PresentCustomerCenterParams,
-} from 'react-native-purchases-ui';
+import RevenueCatUI from 'react-native-purchases-ui';
 import Purchases from 'react-native-purchases';
 import {
   initializeRevenueCat,
+  isNativePlatform,
+  isConfigured,
   getProStatusWithInfo,
   showHostedPaywall as showHostedPaywallLib,
   restoreAndSync as restoreAndSyncLib,
   PRO_ENTITLEMENT,
 } from './revenuecat';
-
-export { PAYWALL_RESULT };
+import { config } from '../config';
 
 function hasProEntitlement(info: CustomerInfo): boolean {
   return typeof info.entitlements.active[PRO_ENTITLEMENT] !== 'undefined';
 }
 
-function getTrialDaysRemaining(info: CustomerInfo): number | null {
+function computeTrialDaysRemaining(info: CustomerInfo): number | null {
   const pro = info.entitlements.active[PRO_ENTITLEMENT];
   if (!pro?.expirationDate) return null;
   const now = new Date();
@@ -49,9 +49,11 @@ function getTrialDaysRemaining(info: CustomerInfo): number | null {
   return days <= 3 && days > 0 ? days : null;
 }
 
-interface SubscriptionContextType {
+export interface SubscriptionContextType {
   isSubscribed: boolean;
   isLoading: boolean;
+  paywallEnabled: boolean;
+  sdkAvailable: boolean;
   currentOffering: PurchasesOffering | null;
   customerInfo: CustomerInfo | null;
   purchasePackage: (
@@ -60,11 +62,9 @@ interface SubscriptionContextType {
   restorePurchases: () => Promise<{ success: boolean; error?: string }>;
   getSubscriptionStatus: () => Promise<void>;
   trialDaysRemaining: number | null;
-  presentPaywall: (params?: PresentPaywallParams) => Promise<PAYWALL_RESULT>;
-  presentPaywallIfNeeded: () => Promise<PAYWALL_RESULT>;
-  presentCustomerCenter: (
-    params?: PresentCustomerCenterParams
-  ) => Promise<void>;
+  presentPaywall: () => Promise<string>;
+  presentPaywallIfNeeded: () => Promise<string>;
+  presentCustomerCenter: () => Promise<void>;
 }
 
 const SubscriptionContext =
@@ -73,8 +73,12 @@ const SubscriptionContext =
 export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({
   children,
 }) => {
-  const [isSubscribed, setIsSubscribed] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const paywallEnabled = config.enablePaywall;
+  const platformSupported = isNativePlatform();
+
+  const [sdkAvailable, setSdkAvailable] = useState(false);
+  const [isSubscribed, setIsSubscribed] = useState(!paywallEnabled);
+  const [isLoading, setIsLoading] = useState(paywallEnabled && platformSupported);
   const [currentOffering, setCurrentOffering] =
     useState<PurchasesOffering | null>(null);
   const [customerInfo, setCustomerInfo] = useState<CustomerInfo | null>(null);
@@ -83,27 +87,40 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({
   );
 
   const getSubscriptionStatus = useCallback(async () => {
+    if (!isConfigured()) return;
     const { hasPro, customerInfo: info } = await getProStatusWithInfo();
     if (info) {
       setCustomerInfo(info);
       setIsSubscribed(hasPro);
-      setTrialDaysRemaining(getTrialDaysRemaining(info));
+      setTrialDaysRemaining(computeTrialDaysRemaining(info));
     } else {
       setIsSubscribed(false);
     }
   }, []);
 
   useEffect(() => {
+    if (!paywallEnabled || !platformSupported) {
+      setIsSubscribed(true);
+      setIsLoading(false);
+      return;
+    }
+
     let cancelled = false;
     const run = async () => {
       try {
-        await initializeRevenueCat();
+        const configured = await initializeRevenueCat();
         if (cancelled) return;
-        const offerings = await Purchases.getOfferings();
-        if (offerings.current) {
-          setCurrentOffering(offerings.current);
+        setSdkAvailable(configured);
+
+        if (configured) {
+          const offerings = await Purchases.getOfferings();
+          if (offerings.current) {
+            setCurrentOffering(offerings.current);
+          }
+          await getSubscriptionStatus();
+        } else {
+          setIsSubscribed(false);
         }
-        await getSubscriptionStatus();
       } catch (error) {
         if (!cancelled && __DEV__) {
           console.warn('[Subscription] Init error:', error);
@@ -115,22 +132,36 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({
     };
     run();
     return () => { cancelled = true; };
-  }, [getSubscriptionStatus]);
+  }, [paywallEnabled, platformSupported, getSubscriptionStatus]);
 
   useEffect(() => {
-    const listener = (info: CustomerInfo) => {
-      setCustomerInfo(info);
-      setIsSubscribed(hasProEntitlement(info));
-      setTrialDaysRemaining(getTrialDaysRemaining(info));
+    if (!paywallEnabled || !platformSupported) return;
+
+    let remove: (() => void) | undefined;
+    const setup = async () => {
+      if (!isConfigured()) return;
+      try {
+        const listener = (info: CustomerInfo) => {
+          setCustomerInfo(info);
+          setIsSubscribed(hasProEntitlement(info));
+          setTrialDaysRemaining(computeTrialDaysRemaining(info));
+        };
+        remove = Purchases.addCustomerInfoUpdateListener(listener) as unknown as (() => void);
+      } catch {
+        // SDK not available
+      }
     };
-    const remove = Purchases.addCustomerInfoUpdateListener(listener);
+    setup();
     return () => { if (typeof remove === 'function') remove(); };
-  }, []);
+  }, [paywallEnabled, platformSupported]);
 
   const purchasePackage = useCallback(
     async (
       pkg: PurchasesPackage
     ): Promise<{ success: boolean; error?: string }> => {
+      if (!isConfigured()) {
+        return { success: false, error: 'Purchases SDK not available on this platform' };
+      }
       try {
         const { customerInfo: info } = await Purchases.purchasePackage(pkg);
         setCustomerInfo(info);
@@ -154,59 +185,57 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({
     success: boolean;
     error?: string;
   }> => {
+    if (!isConfigured()) {
+      return { success: false, error: 'Purchases SDK not available on this platform' };
+    }
     const hasPro = await restoreAndSyncLib();
     await getSubscriptionStatus();
     return hasPro ? { success: true } : { success: false, error: 'No active subscription found' };
   }, [getSubscriptionStatus]);
 
-  const presentPaywall = useCallback(
-    async (params?: PresentPaywallParams): Promise<PAYWALL_RESULT> => {
-      try {
-        const result = await showHostedPaywallLib();
-        if (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) {
-          await getSubscriptionStatus();
-        }
-        return result;
-      } catch {
-        return PAYWALL_RESULT.NOT_PRESENTED;
+  const presentPaywall = useCallback(async (): Promise<string> => {
+    try {
+      const result = await showHostedPaywallLib();
+      if (result === 'PURCHASED' || result === 'RESTORED') {
+        await getSubscriptionStatus();
       }
-    },
-    [getSubscriptionStatus]
-  );
+      return result;
+    } catch {
+      return 'NOT_PRESENTED';
+    }
+  }, [getSubscriptionStatus]);
 
-  const presentPaywallIfNeeded = useCallback(async (): Promise<PAYWALL_RESULT> => {
+  const presentPaywallIfNeeded = useCallback(async (): Promise<string> => {
+    if (!isConfigured()) return 'NOT_PRESENTED';
     try {
       const result = await RevenueCatUI.presentPaywallIfNeeded({
         requiredEntitlementIdentifier: PRO_ENTITLEMENT,
         offering: currentOffering ?? undefined,
         displayCloseButton: true,
       });
-      if (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) {
-        await getSubscriptionStatus();
-      }
-      return result;
+      return result as string;
     } catch {
-      return PAYWALL_RESULT.NOT_PRESENTED;
+      return 'NOT_PRESENTED';
     }
   }, [currentOffering, getSubscriptionStatus]);
 
-  const presentCustomerCenter = useCallback(
-    async (params?: PresentCustomerCenterParams): Promise<void> => {
-      try {
-        await RevenueCatUI.presentCustomerCenter(params);
-        await getSubscriptionStatus();
-      } catch {
-        // Ignore (e.g. Expo Go)
-      }
-    },
-    [getSubscriptionStatus]
-  );
+  const presentCustomerCenter = useCallback(async (): Promise<void> => {
+    if (!isConfigured()) return;
+    try {
+      await RevenueCatUI.presentCustomerCenter();
+      await getSubscriptionStatus();
+    } catch {
+      // Ignore (e.g. web / Expo Go)
+    }
+  }, [getSubscriptionStatus]);
 
   return (
     <SubscriptionContext.Provider
       value={{
         isSubscribed,
         isLoading,
+        paywallEnabled,
+        sdkAvailable,
         currentOffering,
         customerInfo,
         purchasePackage,

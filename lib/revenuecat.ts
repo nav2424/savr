@@ -1,15 +1,25 @@
 /**
  * RevenueCat Hosted Paywall (Paywalls V2)
  * Entitlement: "pro". Uses offerings.current from RevenueCat dashboard.
+ *
+ * Platform support: iOS and Android have full SDK support. On web,
+ * RevenueCat runs in "Preview API Mode" but cannot complete purchases.
+ * All functions guard against missing configuration and return safe defaults.
  */
 
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import Purchases, { LOG_LEVEL } from 'react-native-purchases';
-import RevenueCatUI, { PAYWALL_RESULT } from 'react-native-purchases-ui';
+import RevenueCatUI from 'react-native-purchases-ui';
 import type { PurchasesOffering, PurchasesOfferings } from 'react-native-purchases';
 
 const PRO_ENTITLEMENT = 'pro';
+
+const NATIVE_PLATFORMS: string[] = ['ios', 'android'];
+
+export function isNativePlatform(): boolean {
+  return NATIVE_PLATFORMS.includes(Platform.OS);
+}
 
 function fromEnv(key: string): string {
   const v = process.env[key];
@@ -35,28 +45,42 @@ function getAndroidApiKey(): string {
   );
 }
 
-let initPromise: Promise<void> | null = null;
+let _configured = false;
+let initPromise: Promise<boolean> | null = null;
 
-export async function initializeRevenueCat(): Promise<void> {
+export function isConfigured(): boolean {
+  return _configured;
+}
+
+export async function initializeRevenueCat(): Promise<boolean> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    if (Platform.OS === 'ios') {
-      const apiKey = getIosApiKey();
-      if (!apiKey) {
-        if (__DEV__) console.warn('[RevenueCat] No iOS API key');
-        return;
+    try {
+      let apiKey = '';
+      if (Platform.OS === 'ios') {
+        apiKey = getIosApiKey();
+      } else if (Platform.OS === 'android') {
+        apiKey = getAndroidApiKey();
+      } else {
+        if (__DEV__) {
+          console.info(`[RevenueCat] Platform "${Platform.OS}" — SDK may run in preview mode`);
+        }
+        return false;
       }
+
+      if (!apiKey) {
+        if (__DEV__) console.warn(`[RevenueCat] No ${Platform.OS} API key – paywall will not work`);
+        return false;
+      }
+
       Purchases.configure({ apiKey });
       if (__DEV__) Purchases.setLogLevel(LOG_LEVEL.DEBUG);
-    } else if (Platform.OS === 'android') {
-      const apiKey = getAndroidApiKey();
-      if (!apiKey) {
-        if (__DEV__) console.warn('[RevenueCat] No Android API key');
-        return;
-      }
-      Purchases.configure({ apiKey });
-      if (__DEV__) Purchases.setLogLevel(LOG_LEVEL.DEBUG);
+      _configured = true;
+      return true;
+    } catch (e) {
+      if (__DEV__) console.warn('[RevenueCat] Init failed:', e);
+      return false;
     }
   })();
 
@@ -64,6 +88,11 @@ export async function initializeRevenueCat(): Promise<void> {
 }
 
 export async function getCurrentOfferingOrThrow(): Promise<PurchasesOffering> {
+  if (!_configured) {
+    throw new Error(
+      'RevenueCat is not configured. Ensure initializeRevenueCat() succeeded on a native platform with valid API keys.'
+    );
+  }
   const offerings: PurchasesOfferings = await Purchases.getOfferings();
   const offeringId = fromEnv('EXPO_PUBLIC_REVENUECAT_OFFERING_ID');
   const offering = offeringId
@@ -77,7 +106,11 @@ export async function getCurrentOfferingOrThrow(): Promise<PurchasesOffering> {
   return offering;
 }
 
-export async function showHostedPaywall(): Promise<PAYWALL_RESULT> {
+export async function showHostedPaywall(): Promise<string> {
+  if (!_configured) {
+    if (__DEV__) console.warn('[RevenueCat] Cannot show paywall – SDK not configured');
+    return 'NOT_PRESENTED';
+  }
   const offering = await getCurrentOfferingOrThrow();
   return RevenueCatUI.presentPaywall({
     offering,
@@ -86,6 +119,7 @@ export async function showHostedPaywall(): Promise<PAYWALL_RESULT> {
 }
 
 export async function isPro(): Promise<boolean> {
+  if (!_configured) return false;
   try {
     const customerInfo = await Purchases.getCustomerInfo();
     return typeof customerInfo.entitlements.active[PRO_ENTITLEMENT] !== 'undefined';
@@ -98,6 +132,7 @@ export async function getProStatusWithInfo(): Promise<{
   hasPro: boolean;
   customerInfo: import('react-native-purchases').CustomerInfo | null;
 }> {
+  if (!_configured) return { hasPro: false, customerInfo: null };
   try {
     const customerInfo = await Purchases.getCustomerInfo();
     const hasPro = typeof customerInfo.entitlements.active[PRO_ENTITLEMENT] !== 'undefined';
@@ -108,6 +143,7 @@ export async function getProStatusWithInfo(): Promise<{
 }
 
 export async function restoreAndSync(): Promise<boolean> {
+  if (!_configured) return false;
   await Purchases.restorePurchases();
   return isPro();
 }
@@ -125,4 +161,4 @@ export function logPaywallDiagnostics(
   });
 }
 
-export { PAYWALL_RESULT, PRO_ENTITLEMENT };
+export { PRO_ENTITLEMENT };

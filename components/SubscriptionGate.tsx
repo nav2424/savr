@@ -1,120 +1,64 @@
 /**
  * Subscription Gate - Protects App Access
  *
- * To enable paywall: set EXPO_PUBLIC_ENABLE_PAYWALL=true (EAS secrets or .env).
- * app/_layout.tsx wraps content in SubscriptionGate when config.enablePaywall is true.
- *
- * Shows paywall if user is not subscribed.
- * Allows access during 3-day trial and after subscription.
- *
- * NOTE: In development/Expo Go, paywall is DISABLED for existing users;
- * only new signups (created in last 5 minutes) see the paywall.
+ * Active only when EXPO_PUBLIC_ENABLE_PAYWALL=true.
+ * Blocks non-subscribed authenticated users from accessing protected routes.
+ * Shows the RevenueCat hosted paywall on native, or a fallback screen on web.
  */
 
-import React, { useEffect, useState } from 'react';
-import { useRouter, useSegments } from 'expo-router';
+import React, { useState } from 'react';
+import { useSegments } from 'expo-router';
 import { useAuth } from '../lib/AuthContext';
 import { useSubscription } from '../lib/SubscriptionContext';
-import { View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from 'react-native';
+import {
+  View,
+  ActivityIndicator,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  ScrollView,
+} from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
   showHostedPaywall,
   isPro,
+  isConfigured,
   getCurrentOfferingOrThrow,
   logPaywallDiagnostics,
 } from '../lib/revenuecat';
-import { PAYWALL_RESULT } from 'react-native-purchases-ui';
-import { supabase } from '../lib/supabase';
 
 interface SubscriptionGateProps {
   children: React.ReactNode;
 }
 
+const PUBLIC_ROUTES = [
+  'welcome',
+  'auth',
+  'onboarding',
+  'paywall',
+  'email-verification',
+  'password-reset',
+];
+
+const PREMIUM_FEATURES = [
+  { icon: '📸', label: 'Unlimited receipt scanning' },
+  { icon: '🥬', label: 'Unlimited pantry items' },
+  { icon: '🧠', label: 'AI-powered recipe suggestions' },
+  { icon: '💰', label: 'Advanced budget tracking' },
+  { icon: '👨‍👩‍👧‍👦', label: 'Collaborative grocery lists' },
+  { icon: '🔔', label: 'Smart expiry notifications' },
+  { icon: '📊', label: 'Price tracking & alerts' },
+];
+
 export const SubscriptionGate: React.FC<SubscriptionGateProps> = ({ children }) => {
   const { user } = useAuth();
-  const { isSubscribed, isLoading, getSubscriptionStatus } = useSubscription();
+  const { isSubscribed, isLoading, getSubscriptionStatus, paywallEnabled } = useSubscription();
   const segments = useSegments();
-  const router = useRouter();
-  const [isNewUser, setIsNewUser] = useState<boolean | null>(null);
-  const [checkingNewUser, setCheckingNewUser] = useState(true);
   const [showingPaywall, setShowingPaywall] = useState(false);
 
-  // Check if user is newly created (within last 5 minutes)
-  useEffect(() => {
-    const checkIfNewUser = async () => {
-      if (!user) {
-        setCheckingNewUser(false);
-        return;
-      }
+  if (!paywallEnabled) return <>{children}</>;
 
-      try {
-        // Get user's auth metadata
-        const { data: authData, error: authError } = await supabase.auth.getUser();
-        
-        // Handle refresh token errors gracefully
-        if (authError) {
-          if (authError.message?.includes('Refresh Token') || authError.message?.includes('refresh_token')) {
-            // Invalid refresh token - assume existing user (don't block access)
-            setIsNewUser(false);
-            setCheckingNewUser(false);
-            return;
-          }
-          // Other auth errors - assume existing user
-          setIsNewUser(false);
-          setCheckingNewUser(false);
-          return;
-        }
-        
-        if (authData.user?.created_at) {
-          const createdAt = new Date(authData.user.created_at);
-          const now = new Date();
-          const minutesSinceCreation = (now.getTime() - createdAt.getTime()) / (1000 * 60);
-          
-          // Consider "new" if created within last 5 minutes
-          setIsNewUser(minutesSinceCreation < 5);
-          
-          if (__DEV__) {
-            console.log(`User created ${minutesSinceCreation.toFixed(1)} minutes ago - ${minutesSinceCreation < 5 ? 'NEW' : 'EXISTING'} user`);
-          }
-        }
-      } catch (error) {
-        console.error('Error checking user creation time:', error);
-        // On error, assume existing user (don't block access)
-        setIsNewUser(false);
-      } finally {
-        setCheckingNewUser(false);
-      }
-    };
-
-    checkIfNewUser();
-  }, [user]);
-
-  useEffect(() => {
-    if (isLoading || checkingNewUser) return;
-
-    // Allow these routes without subscription
-    const publicRoutes = ['welcome', 'auth', 'onboarding', 'paywall', 'email-verification', 'password-reset'];
-    const currentRoute = segments[segments.length - 1] as string;
-    const isPublicRoute = publicRoutes.includes(currentRoute);
-
-    // If user is signed in
-    if (user) {
-      // Check if subscribed OR if user is existing (not new)
-      const shouldShowPaywall = !isSubscribed && isNewUser !== false;
-      
-      if (shouldShowPaywall && !isPublicRoute) {
-        // Not subscribed AND is a new user - present hosted paywall (handled in render below)
-      }
-    } else {
-      // Not signed in - send to welcome
-      if (!isPublicRoute) {
-        router.replace('/welcome');
-      }
-    }
-  }, [user, isSubscribed, isLoading, segments, isNewUser, checkingNewUser]);
-
-  // Show loading while checking subscription and user status
-  if (isLoading || checkingNewUser) {
+  if (isLoading) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#6A9571" />
@@ -122,13 +66,17 @@ export const SubscriptionGate: React.FC<SubscriptionGateProps> = ({ children }) 
     );
   }
 
-  // Block access and show Upgrade button for unsubscribed new users
-  const shouldShowPaywall = user && !isSubscribed && isNewUser !== false;
   const currentRoute = segments[segments.length - 1] as string;
-  const isPublicRoute = ['welcome', 'auth', 'onboarding', 'paywall', 'email-verification', 'password-reset'].includes(currentRoute);
+  const isPublicRoute = PUBLIC_ROUTES.includes(currentRoute);
 
-  if (shouldShowPaywall && !isPublicRoute) {
+  if (user && !isSubscribed && !isPublicRoute) {
     const handleUpgrade = async () => {
+      if (!isConfigured()) {
+        // On web / unsupported platforms, there is no native paywall to show
+        if (__DEV__) console.info('[SubscriptionGate] SDK not configured – cannot present paywall');
+        return;
+      }
+
       setShowingPaywall(true);
       try {
         const offering = await getCurrentOfferingOrThrow();
@@ -140,11 +88,11 @@ export const SubscriptionGate: React.FC<SubscriptionGateProps> = ({ children }) 
         const isProAfter = await isPro();
         if (__DEV__) logPaywallDiagnostics(offering, isProAfter);
 
-        if (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) {
+        if (result === 'PURCHASED' || result === 'RESTORED') {
           await getSubscriptionStatus();
         }
       } catch (err) {
-        if (__DEV__) console.warn('[RevenueCat] handleUpgrade failed:', err);
+        if (__DEV__) console.warn('[SubscriptionGate] handleUpgrade failed:', err);
       } finally {
         setShowingPaywall(false);
       }
@@ -152,21 +100,58 @@ export const SubscriptionGate: React.FC<SubscriptionGateProps> = ({ children }) 
 
     return (
       <LinearGradient colors={['#6A9571', '#4A7558']} style={styles.paywallBlock}>
-        <View style={styles.paywallBlockContent}>
-          <Text style={styles.paywallBlockTitle}>SAVR Premium</Text>
-          <Text style={styles.paywallBlockSubtitle}>Subscribe to unlock all features</Text>
-          <TouchableOpacity
-            style={styles.paywallBlockButton}
-            onPress={handleUpgrade}
-            disabled={showingPaywall}
-          >
-            {showingPaywall ? (
-              <ActivityIndicator color="#6A9571" />
-            ) : (
-              <Text style={styles.paywallBlockButtonText}>Upgrade</Text>
-            )}
-          </TouchableOpacity>
-        </View>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.paywallBlockContent}>
+            <Text style={styles.paywallIcon}>✨</Text>
+            <Text style={styles.paywallBlockTitle}>SAVR Premium</Text>
+            <Text style={styles.paywallBlockSubtitle}>
+              Unlock the full power of smart grocery management
+            </Text>
+
+            <View style={styles.featuresContainer}>
+              {PREMIUM_FEATURES.map((feature, index) => (
+                <View key={index} style={styles.featureRow}>
+                  <Text style={styles.featureIcon}>{feature.icon}</Text>
+                  <Text style={styles.featureLabel}>{feature.label}</Text>
+                </View>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              style={styles.paywallBlockButton}
+              onPress={handleUpgrade}
+              disabled={showingPaywall}
+            >
+              {showingPaywall ? (
+                <ActivityIndicator color="#6A9571" />
+              ) : (
+                <Text style={styles.paywallBlockButtonText}>View Plans</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.restoreButton}
+              onPress={async () => {
+                setShowingPaywall(true);
+                try {
+                  const { restoreAndSync } = await import('../lib/revenuecat');
+                  const hasPro = await restoreAndSync();
+                  if (hasPro) await getSubscriptionStatus();
+                } catch {
+                  // ignore
+                } finally {
+                  setShowingPaywall(false);
+                }
+              }}
+              disabled={showingPaywall}
+            >
+              <Text style={styles.restoreButtonText}>Restore Purchases</Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
       </LinearGradient>
     );
   }
@@ -183,36 +168,80 @@ const styles = StyleSheet.create({
   },
   paywallBlock: {
     flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
-    alignItems: 'center',
   },
   paywallBlockContent: {
     alignItems: 'center',
-    padding: 40,
+    padding: 32,
+  },
+  paywallIcon: {
+    fontSize: 56,
+    marginBottom: 16,
   },
   paywallBlockTitle: {
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: '800',
     color: '#FFFFFF',
     marginBottom: 8,
+    textAlign: 'center',
   },
   paywallBlockSubtitle: {
     fontSize: 16,
     color: 'rgba(255,255,255,0.9)',
+    marginBottom: 28,
+    textAlign: 'center',
+    lineHeight: 22,
+    maxWidth: 300,
+  },
+  featuresContainer: {
+    width: '100%',
+    maxWidth: 320,
     marginBottom: 32,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderRadius: 16,
+    padding: 20,
+  },
+  featureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  featureIcon: {
+    fontSize: 20,
+    marginRight: 12,
+    width: 28,
+    textAlign: 'center',
+  },
+  featureLabel: {
+    fontSize: 15,
+    color: '#FFFFFF',
+    fontWeight: '500',
+    flex: 1,
   },
   paywallBlockButton: {
     backgroundColor: '#FFFFFF',
     paddingHorizontal: 48,
     paddingVertical: 16,
     borderRadius: 12,
-    minWidth: 160,
+    minWidth: 200,
     alignItems: 'center',
+    marginBottom: 16,
   },
   paywallBlockButtonText: {
     fontSize: 18,
     fontWeight: '700',
     color: '#6A9571',
   },
+  restoreButton: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  restoreButtonText: {
+    fontSize: 14,
+    color: 'rgba(255,255,255,0.9)',
+    textDecorationLine: 'underline',
+  },
 });
-
