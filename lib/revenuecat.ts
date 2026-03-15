@@ -45,6 +45,28 @@ function getAndroidApiKey(): string {
   );
 }
 
+function getExpoGoApiKey(): string {
+  return (
+    fromEnv('EXPO_PUBLIC_RC_TEST_STORE_API_KEY') ||
+    fromEnv('EXPO_PUBLIC_REVENUECAT_TEST_STORE_API_KEY') ||
+    fromEnv('EXPO_PUBLIC_REVENUECAT_WEB_API_KEY') ||
+    ''
+  );
+}
+
+function isExpoGoRuntime(): boolean {
+  const appOwnership = ((Constants as any)?.appOwnership || '').toLowerCase();
+  const executionEnvironment = String(
+    (Constants as any)?.executionEnvironment || ''
+  ).toLowerCase();
+  return appOwnership === 'expo' || executionEnvironment.includes('storeclient');
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
 let initPromise: Promise<void> | null = null;
 
 function getConfiguredOfferingId(): string {
@@ -55,21 +77,68 @@ export async function initializeRevenueCat(): Promise<void> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
+    const runningInExpoGo = isExpoGoRuntime();
     if (Platform.OS === 'ios') {
-      const apiKey = getIosApiKey();
+      const apiKey = runningInExpoGo ? getExpoGoApiKey() : getIosApiKey();
       if (!apiKey) {
-        if (__DEV__) console.warn('[RevenueCat] No iOS API key');
+        if (__DEV__) {
+          console.warn(
+            runningInExpoGo
+              ? '[RevenueCat] Expo Go detected. Set EXPO_PUBLIC_RC_TEST_STORE_API_KEY (or EXPO_PUBLIC_REVENUECAT_WEB_API_KEY), or use a development build/TestFlight.'
+              : '[RevenueCat] No iOS API key'
+          );
+        }
         return;
       }
-      Purchases.configure({ apiKey });
+      try {
+        Purchases.configure({ apiKey });
+      } catch (error) {
+        const message = getErrorMessage(error);
+        // Expo Go cannot use native App Store keys.
+        if (
+          runningInExpoGo &&
+          /native store is not available|expo go|test store/i.test(message)
+        ) {
+          if (__DEV__) {
+            console.warn(
+              '[RevenueCat] Expo Go does not support native store keys. Use EXPO_PUBLIC_RC_TEST_STORE_API_KEY, or switch to a development build/TestFlight.'
+            );
+          }
+          return;
+        }
+        throw error;
+      }
       if (__DEV__) Purchases.setLogLevel(LOG_LEVEL.DEBUG);
     } else if (Platform.OS === 'android') {
-      const apiKey = getAndroidApiKey();
+      const apiKey = runningInExpoGo ? getExpoGoApiKey() : getAndroidApiKey();
       if (!apiKey) {
-        if (__DEV__) console.warn('[RevenueCat] No Android API key');
+        if (__DEV__) {
+          console.warn(
+            runningInExpoGo
+              ? '[RevenueCat] Expo Go detected. Set EXPO_PUBLIC_RC_TEST_STORE_API_KEY (or EXPO_PUBLIC_REVENUECAT_WEB_API_KEY), or use a development build/TestFlight.'
+              : '[RevenueCat] No Android API key'
+          );
+        }
         return;
       }
-      Purchases.configure({ apiKey });
+      try {
+        Purchases.configure({ apiKey });
+      } catch (error) {
+        const message = getErrorMessage(error);
+        // Expo Go cannot use native Play Store keys.
+        if (
+          runningInExpoGo &&
+          /native store is not available|expo go|test store/i.test(message)
+        ) {
+          if (__DEV__) {
+            console.warn(
+              '[RevenueCat] Expo Go does not support native store keys. Use EXPO_PUBLIC_RC_TEST_STORE_API_KEY, or switch to a development build/TestFlight.'
+            );
+          }
+          return;
+        }
+        throw error;
+      }
       if (__DEV__) Purchases.setLogLevel(LOG_LEVEL.DEBUG);
     }
   })();

@@ -27,7 +27,8 @@ EXPO_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 # Get keys from: https://app.revenuecat.com → Project → API Keys
 EXPO_PUBLIC_RC_IOS_API_KEY=appl_your_ios_key
 # EXPO_PUBLIC_RC_ANDROID_API_KEY=goog_your_android_key
-# EXPO_PUBLIC_REVENUECAT_WEB_API_KEY=rcb_your_web_key  # for Expo Go
+# EXPO_PUBLIC_REVENUECAT_WEB_API_KEY=rcb_your_web_key  # optional web SDK key
+# EXPO_PUBLIC_RC_TEST_STORE_API_KEY=rcb_test_store_key # required for Expo Go native RevenueCat testing
 # Optional: specific offering ID (e.g. "default"). If unset, uses the Current offering.
 # EXPO_PUBLIC_REVENUECAT_OFFERING_ID=default
 # Optional: entitlement identifier from RevenueCat (defaults to "pro"). Set this if your entitlement is named "Pro".
