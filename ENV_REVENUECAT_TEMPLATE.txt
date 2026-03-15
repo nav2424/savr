@@ -10,6 +10,12 @@ EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY=your_android_api_key_here
 # Web/Browser API Key (for Expo Go testing)
 EXPO_PUBLIC_REVENUECAT_WEB_API_KEY=your_web_api_key_here
 
+# Optional: specific offering ID (uses "Current" if unset)
+# EXPO_PUBLIC_REVENUECAT_OFFERING_ID=default
+
+# Optional: entitlement identifier (defaults to "pro")
+# EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID=Pro
+
 # Example of what it should look like with real keys:
 # EXPO_PUBLIC_REVENUECAT_IOS_API_KEY=appl_abc123def456ghi789jkl012mno345pqr
 # EXPO_PUBLIC_REVENUECAT_ANDROID_API_KEY=goog_xyz789wvu456tsr123qpo890nml567kji

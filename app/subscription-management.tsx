@@ -23,6 +23,7 @@ import { Stack, useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSubscription } from '../lib/SubscriptionContext';
 import {
+  getActiveProEntitlement,
   showHostedPaywall,
   isPro,
   getCurrentOfferingOrThrow,
@@ -43,7 +44,9 @@ export default function SubscriptionManagementScreen() {
 
   const [restoring, setRestoring] = useState(false);
 
-  const activeEntitlement = customerInfo?.entitlements.active['pro'];
+  const activeEntitlement = customerInfo
+    ? getActiveProEntitlement(customerInfo)
+    : null;
   const subscriptionType =
     activeEntitlement?.productIdentifier?.includes('annual') ||
     activeEntitlement?.productIdentifier === 'annual_subscription_1'

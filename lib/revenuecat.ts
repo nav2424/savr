@@ -1,15 +1,25 @@
 /**
  * RevenueCat Hosted Paywall (Paywalls V2)
- * Entitlement: "pro". Uses offerings.current from RevenueCat dashboard.
+ * Entitlement defaults to "pro" (configurable via env).
+ * Offering defaults to RevenueCat "current" (configurable via env).
  */
 
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import Purchases, { LOG_LEVEL } from 'react-native-purchases';
 import RevenueCatUI, { PAYWALL_RESULT } from 'react-native-purchases-ui';
-import type { PurchasesOffering, PurchasesOfferings } from 'react-native-purchases';
+import type {
+  CustomerInfo,
+  PurchasesEntitlementInfo,
+  PurchasesOffering,
+  PurchasesOfferings,
+} from 'react-native-purchases';
 
-const PRO_ENTITLEMENT = 'pro';
+const DEFAULT_PRO_ENTITLEMENT = 'pro';
+const PRO_ENTITLEMENT =
+  fromEnv('EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID') ||
+  fromEnv('EXPO_PUBLIC_RC_ENTITLEMENT_ID') ||
+  DEFAULT_PRO_ENTITLEMENT;
 
 function fromEnv(key: string): string {
   const v = process.env[key];
@@ -36,6 +46,10 @@ function getAndroidApiKey(): string {
 }
 
 let initPromise: Promise<void> | null = null;
+
+function getConfiguredOfferingId(): string {
+  return fromEnv('EXPO_PUBLIC_REVENUECAT_OFFERING_ID');
+}
 
 export async function initializeRevenueCat(): Promise<void> {
   if (initPromise) return initPromise;
@@ -65,16 +79,38 @@ export async function initializeRevenueCat(): Promise<void> {
 
 export async function getCurrentOfferingOrThrow(): Promise<PurchasesOffering> {
   const offerings: PurchasesOfferings = await Purchases.getOfferings();
-  const offeringId = fromEnv('EXPO_PUBLIC_REVENUECAT_OFFERING_ID');
-  const offering = offeringId
-    ? offerings.all[offeringId] ?? offerings.current
-    : offerings.current;
+  const offering = selectConfiguredOffering(offerings);
   if (!offering) {
+    const offeringId = getConfiguredOfferingId();
     throw new Error(
-      `No current offering. Dashboard: set an offering as Current. Available: ${Object.keys(offerings.all).join(', ') || 'none'}`
+      `No offering found${offeringId ? ` for "${offeringId}"` : ''}. Dashboard: set an offering as Current. Available: ${Object.keys(offerings.all).join(', ') || 'none'}`
     );
   }
   return offering;
+}
+
+export function selectConfiguredOffering(
+  offerings: PurchasesOfferings
+): PurchasesOffering | null {
+  const offeringId = getConfiguredOfferingId();
+  if (offeringId) {
+    return offerings.all[offeringId] ?? offerings.current ?? null;
+  }
+  return offerings.current ?? null;
+}
+
+export function getActiveProEntitlement(
+  customerInfo: CustomerInfo
+): PurchasesEntitlementInfo | null {
+  const activeEntitlements = customerInfo.entitlements.active;
+  const directMatch = activeEntitlements[PRO_ENTITLEMENT];
+  if (directMatch) return directMatch;
+
+  const caseInsensitiveMatch = Object.keys(activeEntitlements).find(
+    (identifier) => identifier.toLowerCase() === PRO_ENTITLEMENT.toLowerCase()
+  );
+  if (!caseInsensitiveMatch) return null;
+  return activeEntitlements[caseInsensitiveMatch];
 }
 
 export async function showHostedPaywall(): Promise<PAYWALL_RESULT> {
@@ -88,7 +124,7 @@ export async function showHostedPaywall(): Promise<PAYWALL_RESULT> {
 export async function isPro(): Promise<boolean> {
   try {
     const customerInfo = await Purchases.getCustomerInfo();
-    return typeof customerInfo.entitlements.active[PRO_ENTITLEMENT] !== 'undefined';
+    return !!getActiveProEntitlement(customerInfo);
   } catch {
     return false;
   }
@@ -100,7 +136,7 @@ export async function getProStatusWithInfo(): Promise<{
 }> {
   try {
     const customerInfo = await Purchases.getCustomerInfo();
-    const hasPro = typeof customerInfo.entitlements.active[PRO_ENTITLEMENT] !== 'undefined';
+    const hasPro = !!getActiveProEntitlement(customerInfo);
     return { hasPro, customerInfo };
   } catch {
     return { hasPro: false, customerInfo: null };
@@ -119,6 +155,7 @@ export function logPaywallDiagnostics(
   if (!__DEV__) return;
   const pkgIds = offering.availablePackages.map((p) => p.identifier);
   console.log('[RevenueCat] Paywall diagnostics:', {
+    entitlementIdentifier: PRO_ENTITLEMENT,
     offeringIdentifier: offering.identifier,
     availablePackages: pkgIds,
     isPro: isProResult,

@@ -30,6 +30,8 @@ EXPO_PUBLIC_RC_IOS_API_KEY=appl_your_ios_key
 # EXPO_PUBLIC_REVENUECAT_WEB_API_KEY=rcb_your_web_key  # for Expo Go
 # Optional: specific offering ID (e.g. "default"). If unset, uses the Current offering.
 # EXPO_PUBLIC_REVENUECAT_OFFERING_ID=default
+# Optional: entitlement identifier from RevenueCat (defaults to "pro"). Set this if your entitlement is named "Pro".
+# EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID=Pro
 
 # Receipt OCR server (optional). For dev build on a physical device, set to your machine's LAN IP
 # so the app can reach the OCR server (e.g. EXPO_PUBLIC_API_BASE=http://192.168.1.100:3000).
