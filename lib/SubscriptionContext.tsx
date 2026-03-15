@@ -126,8 +126,10 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({
       setIsSubscribed(hasProEntitlement(info));
       setTrialDaysRemaining(getTrialDaysRemaining(info));
     };
-    const remove = Purchases.addCustomerInfoUpdateListener(listener);
-    return () => { if (typeof remove === 'function') remove(); };
+    Purchases.addCustomerInfoUpdateListener(listener);
+    return () => {
+      Purchases.removeCustomerInfoUpdateListener(listener);
+    };
   }, []);
 
   const purchasePackage = useCallback(
