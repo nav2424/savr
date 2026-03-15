@@ -66,6 +66,14 @@ describe('getAuthTokensFromUrl', () => {
     })
   })
 
+  it('parses tokens from query even when hash exists', () => {
+    const url = 'savr://email-verification?access_token=at&refresh_token=rt#type=signup'
+    expect(getAuthTokensFromUrl(url)).toEqual({
+      access_token: 'at',
+      refresh_token: 'rt',
+    })
+  })
+
   it('returns empty object when no tokens', () => {
     expect(getAuthTokensFromUrl('savr://email-verification')).toEqual({})
     expect(getAuthTokensFromUrl('savr://email-verification#type=signup')).toEqual({})
