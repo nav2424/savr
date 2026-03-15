@@ -67,13 +67,13 @@ function getErrorMessage(error: unknown): string {
   return String(error);
 }
 
-let initPromise: Promise<void> | null = null;
+let initPromise: Promise<boolean> | null = null;
 
 function getConfiguredOfferingId(): string {
   return fromEnv('EXPO_PUBLIC_REVENUECAT_OFFERING_ID');
 }
 
-export async function initializeRevenueCat(): Promise<void> {
+export async function initializeRevenueCat(): Promise<boolean> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
@@ -88,7 +88,7 @@ export async function initializeRevenueCat(): Promise<void> {
               : '[RevenueCat] No iOS API key'
           );
         }
-        return;
+        return false;
       }
       try {
         Purchases.configure({ apiKey });
@@ -104,11 +104,12 @@ export async function initializeRevenueCat(): Promise<void> {
               '[RevenueCat] Expo Go does not support native store keys. Use EXPO_PUBLIC_RC_TEST_STORE_API_KEY, or switch to a development build/TestFlight.'
             );
           }
-          return;
+          return false;
         }
         throw error;
       }
       if (__DEV__) Purchases.setLogLevel(LOG_LEVEL.DEBUG);
+      return true;
     } else if (Platform.OS === 'android') {
       const apiKey = runningInExpoGo ? getExpoGoApiKey() : getAndroidApiKey();
       if (!apiKey) {
@@ -119,7 +120,7 @@ export async function initializeRevenueCat(): Promise<void> {
               : '[RevenueCat] No Android API key'
           );
         }
-        return;
+        return false;
       }
       try {
         Purchases.configure({ apiKey });
@@ -135,12 +136,14 @@ export async function initializeRevenueCat(): Promise<void> {
               '[RevenueCat] Expo Go does not support native store keys. Use EXPO_PUBLIC_RC_TEST_STORE_API_KEY, or switch to a development build/TestFlight.'
             );
           }
-          return;
+          return false;
         }
         throw error;
       }
       if (__DEV__) Purchases.setLogLevel(LOG_LEVEL.DEBUG);
+      return true;
     }
+    return false;
   })();
 
   return initPromise;

@@ -99,8 +99,15 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({
     let cancelled = false;
     const run = async () => {
       try {
-        await initializeRevenueCat();
+        const isConfigured = await initializeRevenueCat();
         if (cancelled) return;
+        if (!isConfigured) {
+          setCurrentOffering(null);
+          setCustomerInfo(null);
+          setIsSubscribed(false);
+          setTrialDaysRemaining(null);
+          return;
+        }
         const offerings = await Purchases.getOfferings();
         const selectedOffering = selectConfiguredOffering(offerings);
         if (selectedOffering) {

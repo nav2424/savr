@@ -186,9 +186,13 @@ export default function Root() {
     if (!config.enablePaywall) return
     let cancelled = false
     initializeRevenueCat()
-      .then(() => {
+      .then((isConfigured) => {
         if (!cancelled && __DEV__) {
-          logger.info('[RevenueCat] Initialized')
+          if (isConfigured) {
+            logger.info('[RevenueCat] Initialized')
+          } else {
+            logger.warn('[RevenueCat] Not configured for this runtime')
+          }
         }
       })
       .catch((e) => {
