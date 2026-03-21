@@ -8,6 +8,7 @@ import {
   detectAllergensEvidenceBased,
   buildUserAllergenConfig,
   toDetectionInput,
+  isPlainWaterProduct,
 } from '../allergenEngine'
 import { parseSections } from '../allergenEngine/textParser'
 import { getProductNameHints } from '../allergenEngine/productNameHints'
@@ -89,6 +90,42 @@ describe('allergenEngine', () => {
       const out = detectAllergensEvidenceBased(input, config)
       expect(out.matched_allergens.some(m => m.allergen_id === 'milk')).toBe(true)
       expect(out.matched_allergens.some(m => m.allergen_id === 'peanuts')).toBe(true)
+    })
+  })
+
+  describe('Plain water - ALWAYS SAFE (never Uncertain)', () => {
+    it('water product by name returns SAFE even with empty ingredients', () => {
+      const input: Parameters<typeof detectAllergensEvidenceBased>[0] = {
+        ingredients_text: '',
+        contains_text: '',
+        may_contain_text: '',
+        product_name: 'Evian Natural Spring Water',
+      }
+      const out = detectAllergensEvidenceBased(input, config)
+      expect(out.overall_status).toBe('SAFE')
+      expect(out.matched_allergens.length).toBe(0)
+    })
+
+    it('bottled water, mineral water, etc. return SAFE', () => {
+      for (const name of ['Bottled Water', 'Mineral Water', 'Aquafina', 'Purified Water', 'Eau minérale', 'Agua mineral']) {
+        const out = detectAllergensEvidenceBased({ ingredients_text: '', product_name: name }, config)
+        expect(out.overall_status).toBe('SAFE')
+      }
+    })
+
+    it('ingredients-only-water returns SAFE (even without water in product name)', () => {
+      const out = detectAllergensEvidenceBased(
+        { ingredients_text: 'water', product_name: 'Mystery Beverage' },
+        config
+      )
+      expect(out.overall_status).toBe('SAFE')
+    })
+
+    it('isPlainWaterProduct identifies water products', () => {
+      expect(isPlainWaterProduct('Evian Natural Spring Water')).toBe(true)
+      expect(isPlainWaterProduct('Bottled Water')).toBe(true)
+      expect(isPlainWaterProduct('Vitaminwater')).toBe(false)
+      expect(isPlainWaterProduct('Lemonade')).toBe(false)
     })
   })
 

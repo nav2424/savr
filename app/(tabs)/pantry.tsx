@@ -124,6 +124,18 @@ const CATEGORY_METADATA: CategoryMeta[] = [
     colors: { background: 'rgba(175, 82, 222, 0.08)', border: 'rgba(175, 82, 222, 0.2)' }
   },
   {
+    key: 'frozen',
+    label: 'Frozen',
+    emoji: '❄️',
+    colors: { background: 'rgba(100, 181, 246, 0.08)', border: 'rgba(100, 181, 246, 0.2)' }
+  },
+  {
+    key: 'household & cleaning',
+    label: 'Household & Cleaning',
+    emoji: '🧹',
+    colors: { background: 'rgba(94, 92, 230, 0.08)', border: 'rgba(94, 92, 230, 0.2)' }
+  },
+  {
     key: 'non-food / misc',
     label: 'Non-Food / Misc',
     emoji: '📦',

@@ -13,6 +13,9 @@ import {
   Modal,
   FlatList,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Keyboard,
+  TouchableWithoutFeedback,
 } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
 import { StatusBar } from 'expo-status-bar'
@@ -78,6 +81,7 @@ export default function OnboardingScreen() {
   const [progress] = useState(new Animated.Value(0))
   const fadeAnim = useRef(new Animated.Value(0)).current
   const slideAnim = useRef(new Animated.Value(20)).current
+  const scrollViewRef = useRef<ScrollView>(null)
 
   // Location data
   const [country, setCountry] = useState('')
@@ -133,6 +137,20 @@ export default function OnboardingScreen() {
   }
 
   const handleNext = () => {
+    // Validate mandatory fields before advancing
+    if (currentStep === 1 && !country.trim()) {
+      showToast('Please select your country.', { kind: 'warning' })
+      return
+    }
+    if (currentStep === 2 && !householdSize) {
+      showToast('Please select your household size.', { kind: 'warning' })
+      return
+    }
+    if (currentStep === 3 && !monthlyBudget.trim()) {
+      showToast('Please select your monthly budget.', { kind: 'warning' })
+      return
+    }
+
     if (currentStep < ONBOARDING_STEPS.length - 1) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
       const nextStep = currentStep + 1
@@ -388,7 +406,7 @@ export default function OnboardingScreen() {
           },
         ]}
       >
-        <Text style={styles.questionLabelCompact}>Select your country</Text>
+        <Text style={styles.questionLabelCompact}>Select your country *</Text>
         
         <Pressable
           style={({ pressed }) => [
@@ -419,7 +437,11 @@ export default function OnboardingScreen() {
             setCountrySearchQuery('')
           }}
         >
-          <View style={styles.countryModalBackdrop}>
+          <KeyboardAvoidingView
+            style={styles.countryModalBackdrop}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+          >
             <View style={styles.countryModalContainer}>
               <View style={styles.countryModalHeader}>
                 <Text style={styles.countryModalTitle}>Select Country</Text>
@@ -493,7 +515,7 @@ export default function OnboardingScreen() {
                 }
               />
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
       </Animated.View>
     )
@@ -507,28 +529,62 @@ export default function OnboardingScreen() {
     }
   }
 
-  // Predefined allergies list (Wheat only — no separate Gluten; wheat detection covers gluten-containing grains)
-  const predefinedAllergies = [
-    'Peanuts', 
-    'Tree Nuts', 
-    'Milk', 
-    'Eggs', 
-    'Fish', 
-    'Shellfish', 
-    'Soy', 
-    'Wheat',
-    'Sesame',
+  // Predefined allergens (in main selection list)
+  const PREDEFINED_ALLERGENS = [
+    'Peanuts', 'Tree Nuts', 'Milk', 'Eggs', 'Fish', 'Shellfish', 'Soy', 'Wheat',
+    'Sesame', 'Mustard', 'Celery', 'Lupin', 'Sulfites',
   ]
 
-  // Get custom allergies (those not in predefined list)
-  const getCustomAllergies = () => {
-    return allergies.filter(allergy => !predefinedAllergies.includes(allergy))
+  // Whitelist of real food allergens for custom input - validates user isn't entering "iphone" or "spoon"
+  // Includes: FDA/EU major allergens + common additional allergens (fruits, vegetables, legumes, etc.)
+  const REAL_ALLERGEN_WHITELIST: string[] = [
+    ...PREDEFINED_ALLERGENS,
+    'Gluten', 'Molluscs', 'Coconut', 'Corn', 'Rice', 'Oats', 'Barley', 'Rye', 'Buckwheat',
+    'Kiwi', 'Banana', 'Apple', 'Peach', 'Mango', 'Avocado', 'Cherry', 'Strawberry', 'Raspberry',
+    'Blackberry', 'Blueberry', 'Plum', 'Apricot', 'Melon', 'Watermelon', 'Papaya', 'Pineapple',
+    'Pomegranate', 'Fig', 'Date', 'Lychee', 'Passion fruit', 'Dragon fruit',
+    'Tomato', 'Potato', 'Carrot', 'Garlic', 'Onion', 'Bell pepper', 'Chili pepper', 'Peppers',
+    'Broccoli', 'Cabbage', 'Spinach', 'Lettuce', 'Mushroom', 'Beet', 'Radish', 'Asparagus',
+    'Lentils', 'Chickpeas', 'Peas', 'Beans', 'Green beans',
+    'Honey', 'Yeast', 'Cocoa', 'Coffee', 'Sunflower seeds', 'Poppy seeds', 'Pumpkin seeds',
+    'Quinoa', 'Amaranth', 'Spelt', 'Kamut', 'Triticale',
+  ]
+  const [customAllergyError, setCustomAllergyError] = useState<string | null>(null)
+
+  const normalizeToCanonical = (input: string): string | null => {
+    const lower = input.trim().toLowerCase()
+    if (!lower) return null
+    const match = REAL_ALLERGEN_WHITELIST.find(a => a.toLowerCase() === lower)
+    return match || null
   }
 
-  // Combine predefined and custom allergies for the dropdown
-  const getAllAllergiesForDropdown = () => {
-    const customAllergies = getCustomAllergies()
-    return [...predefinedAllergies, ...customAllergies]
+  const addCustomAllergy = () => {
+    const toAdd = customAllergy.trim()
+    if (!toAdd) {
+      setCustomAllergyError(null)
+      return
+    }
+    const items = toAdd.split(',').map(a => a.trim()).filter(a => a)
+    const invalid: string[] = []
+    const validToAdd: string[] = []
+    for (const item of items) {
+      const canonical = normalizeToCanonical(item)
+      if (canonical && !allergies.includes(canonical)) {
+        validToAdd.push(canonical)
+      } else if (!canonical) {
+        invalid.push(item)
+      }
+    }
+    if (invalid.length > 0) {
+      setCustomAllergyError(`"${invalid.join(', ')}" isn't a recognized allergen. Enter real food allergens (e.g., Kiwi, Tomato, Corn).`)
+      return
+    }
+    setCustomAllergyError(null)
+    if (validToAdd.length > 0) {
+      setAllergies([...allergies, ...validToAdd])
+      setCustomAllergy('')
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+    }
   }
 
   const renderHousehold = () => (
@@ -543,7 +599,7 @@ export default function OnboardingScreen() {
     >
       {/* Household Size Section */}
       <View style={styles.householdSection}>
-        <Text style={styles.sectionTitle}>Household Size</Text>
+        <Text style={styles.sectionTitle}>Household Size *</Text>
         <Text style={styles.sectionSubtitle}>How many people live in your home?</Text>
         
         <Pressable
@@ -687,13 +743,12 @@ export default function OnboardingScreen() {
               </View>
 
               <FlatList
-                data={getAllAllergiesForDropdown()}
+                data={PREDEFINED_ALLERGENS}
                 keyExtractor={(item) => item}
                 style={styles.allergiesList}
                 contentContainerStyle={styles.allergiesListContent}
                 renderItem={({ item }) => {
                   const isSelected = allergies.includes(item)
-                  const isCustom = !predefinedAllergies.includes(item)
                   return (
                     <Pressable
                       style={({ pressed }) => [
@@ -722,9 +777,6 @@ export default function OnboardingScreen() {
                           ]}>
                             {item}
                           </Text>
-                          {isCustom && (
-                            <Text style={styles.allergiesListItemCustomLabel}>Custom</Text>
-                          )}
                         </View>
                       </View>
                     </Pressable>
@@ -736,46 +788,32 @@ export default function OnboardingScreen() {
         </Modal>
       </View>
 
-      {/* Custom Allergies Section */}
+      {/* Additional Allergies (optional - type to add from valid list) */}
       <View style={styles.householdSection}>
         <Text style={styles.sectionTitle}>Additional Allergies</Text>
-        <Text style={styles.sectionSubtitle}>Add any other allergies (optional)</Text>
+        <Text style={styles.sectionSubtitle}>Add more real allergens (e.g., Kiwi, Tomato, Corn). Invalid entries like "iphone" are rejected. (optional)</Text>
         <View style={styles.customAllergyContainer}>
           <TextInput
             value={customAllergy}
-            onChangeText={setCustomAllergy}
+            onChangeText={(t) => { setCustomAllergy(t); setCustomAllergyError(null) }}
             placeholder="e.g., Mustard, Celery"
             placeholderTextColor="#999"
-            style={styles.textInput}
-            onSubmitEditing={() => {
-              if (customAllergy.trim()) {
-                const newAllergies = customAllergy.split(',').map(a => a.trim()).filter(a => a)
-                const uniqueNewAllergies = newAllergies.filter(a => !allergies.includes(a))
-                if (uniqueNewAllergies.length > 0) {
-                  setAllergies([...allergies, ...uniqueNewAllergies])
-                }
-                setCustomAllergy('')
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
-              }
+            style={[styles.textInput, customAllergyError && styles.textInputError]}
+            onSubmitEditing={addCustomAllergy}
+            onFocus={() => {
+              setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100)
             }}
           />
+          {customAllergyError && (
+            <Text style={styles.customAllergyErrorText}>{customAllergyError}</Text>
+          )}
           {customAllergy.trim() !== '' && (
             <Pressable
               style={({ pressed }) => [
                 styles.addAllergyButton,
                 pressed && styles.addAllergyButtonPressed,
               ]}
-              onPress={() => {
-                if (customAllergy.trim()) {
-                  const newAllergies = customAllergy.split(',').map(a => a.trim()).filter(a => a)
-                  const uniqueNewAllergies = newAllergies.filter(a => !allergies.includes(a))
-                  if (uniqueNewAllergies.length > 0) {
-                    setAllergies([...allergies, ...uniqueNewAllergies])
-                  }
-                  setCustomAllergy('')
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
-                }
-              }}
+              onPress={addCustomAllergy}
             >
               <Text style={styles.addAllergyButtonText}>Add</Text>
             </Pressable>
@@ -805,7 +843,7 @@ export default function OnboardingScreen() {
         ]}
       >
         <View style={styles.budgetSection}>
-          <Text style={styles.sectionTitle}>Monthly Grocery Budget</Text>
+          <Text style={styles.sectionTitle}>Monthly Grocery Budget *</Text>
           <Text style={styles.sectionSubtitle}>
             Set your monthly spending limit. We'll help you track and save.
           </Text>
@@ -848,7 +886,10 @@ export default function OnboardingScreen() {
             setCustomBudgetInput('')
           }}
         >
-          <View style={styles.budgetModalBackdrop}>
+          <KeyboardAvoidingView
+            style={styles.budgetModalBackdrop}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
             <View style={styles.budgetModalContainer}>
               <View style={styles.budgetModalHeader}>
                 <Text style={styles.budgetModalTitle}>Select Budget</Text>
@@ -939,10 +980,10 @@ export default function OnboardingScreen() {
                       )}
                     </Pressable>
                   )
-                }}
+                }                }
               />
             </View>
-          </View>
+          </KeyboardAvoidingView>
         </Modal>
       </Animated.View>
     )
@@ -996,7 +1037,7 @@ export default function OnboardingScreen() {
         <Text style={styles.createAccountFormTitle}>Create your account</Text>
         
         <View style={styles.createAccountInputWrapper}>
-          <Text style={styles.createAccountLabel}>Full Name</Text>
+          <Text style={styles.createAccountLabel}>Full Name *</Text>
           <TextInput
             style={styles.createAccountInput}
             placeholder="Enter your full name"
@@ -1005,10 +1046,11 @@ export default function OnboardingScreen() {
             onChangeText={setAccountName}
             autoCapitalize="words"
             editable={!accountLoading}
+            onFocus={() => setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100)}
           />
         </View>
         <View style={styles.createAccountInputWrapper}>
-          <Text style={styles.createAccountLabel}>Email</Text>
+          <Text style={styles.createAccountLabel}>Email *</Text>
           <TextInput
             style={[styles.createAccountInput, accountEmailError && styles.createAccountInputError]}
             placeholder="Enter your email"
@@ -1018,11 +1060,12 @@ export default function OnboardingScreen() {
             keyboardType="email-address"
             autoCapitalize="none"
             editable={!accountLoading}
+            onFocus={() => setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100)}
           />
           {accountEmailError && <Text style={styles.createAccountErrorText}>{accountEmailError}</Text>}
         </View>
         <View style={styles.createAccountInputWrapper}>
-          <Text style={styles.createAccountLabel}>Password</Text>
+          <Text style={styles.createAccountLabel}>Password *</Text>
           <TextInput
             style={styles.createAccountInput}
             placeholder="At least 6 characters"
@@ -1031,10 +1074,11 @@ export default function OnboardingScreen() {
             onChangeText={setAccountPassword}
             secureTextEntry
             editable={!accountLoading}
+            onFocus={() => setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100)}
           />
         </View>
         <View style={styles.createAccountInputWrapper}>
-          <Text style={styles.createAccountLabel}>Confirm Password</Text>
+          <Text style={styles.createAccountLabel}>Confirm Password *</Text>
           <TextInput
             style={styles.createAccountInput}
             placeholder="Confirm your password"
@@ -1043,6 +1087,7 @@ export default function OnboardingScreen() {
             onChangeText={setAccountConfirmPassword}
             secureTextEntry
             editable={!accountLoading}
+            onFocus={() => setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100)}
           />
         </View>
       </Animated.View>
@@ -1066,7 +1111,13 @@ export default function OnboardingScreen() {
   })
 
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+    >
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <View style={styles.container}>
       <StatusBar style="dark" />
       
       {/* Background */}
@@ -1089,9 +1140,12 @@ export default function OnboardingScreen() {
 
       {/* Content */}
       <ScrollView 
+        ref={scrollViewRef}
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
       >
         <View style={styles.header}>
           <Text style={styles.title}>{ONBOARDING_STEPS[currentStep].title}</Text>
@@ -1134,7 +1188,9 @@ export default function OnboardingScreen() {
           </LinearGradient>
         </Pressable>
       </View>
-    </View>
+        </View>
+      </TouchableWithoutFeedback>
+    </KeyboardAvoidingView>
   )
 }
 
@@ -1189,7 +1245,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 20,
-    paddingBottom: 120,
+    paddingBottom: 320,
     paddingTop: 8,
   },
   header: {
@@ -1997,6 +2053,16 @@ const styles = StyleSheet.create({
         elevation: 2,
       },
     }),
+  },
+  textInputError: {
+    borderColor: '#FF3B30',
+    borderWidth: 2,
+  },
+  customAllergyErrorText: {
+    fontSize: 13,
+    color: '#FF3B30',
+    marginTop: -4,
+    marginBottom: 8,
   },
   optionButtons: {
     gap: 10,

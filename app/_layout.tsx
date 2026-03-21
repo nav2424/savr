@@ -17,6 +17,7 @@ import { ErrorBoundary, MinimalErrorFallback } from "../lib/ErrorBoundary"
 import { validateConfiguration } from "../lib/ConfigValidator"
 import { logger } from "../lib/Logger"
 import { config } from "../config"
+import { processAuthDeepLink } from "../lib/authDeepLink"
 import { initializeRevenueCat } from "../lib/revenuecat"
 import * as Notifications from 'expo-notifications'
 
@@ -37,6 +38,8 @@ function RootLayoutContent() {
       try {
         // Normalize URL - handle both savr://password-reset and savr:///password-reset
         const normalizedUrl = url.replace(/savr:\/\/\/+/g, 'savr://')
+        // Exchange PKCE / token_hash / implicit tokens before routing (child effects run in inconsistent order).
+        await processAuthDeepLink(normalizedUrl)
         
         // Parse the URL to extract the path
         const parsed = Linking.parse(normalizedUrl)
@@ -63,6 +66,25 @@ function RootLayoutContent() {
           }, 100)
           return
         }
+
+        // Family invite: savr://join-family?code=...
+        if (
+          normalizedUrl.includes('join-family') ||
+          path.includes('join-family') ||
+          hostname === 'join-family'
+        ) {
+          const qp = parsed.queryParams?.code
+          const code = Array.isArray(qp) ? qp[0] : qp
+          logger.info('👨‍👩‍👧 Family invite deep link', { hasCode: Boolean(code) })
+          setTimeout(() => {
+            router.replace(
+              code
+                ? (`/join-family?code=${encodeURIComponent(String(code))}` as const)
+                : '/join-family'
+            )
+          }, 100)
+          return
+        }
       } catch (error) {
         logger.error('Error handling deep link:', error)
       }
@@ -72,7 +94,7 @@ function RootLayoutContent() {
     Linking.getInitialURL().then((url) => {
       if (url) {
         logger.info('🔗 Initial URL detected:', url)
-        handleDeepLink(url)
+        void handleDeepLink(url)
       }
     }).catch((error) => {
       logger.error('Error getting initial URL:', error)
@@ -81,7 +103,7 @@ function RootLayoutContent() {
     // Listen for deep links while app is running
     const subscription = Linking.addEventListener('url', (event) => {
       logger.info('🔗 Deep link event received:', event.url)
-      handleDeepLink(event.url)
+      void handleDeepLink(event.url)
     })
 
     return () => {
@@ -131,21 +153,19 @@ function RootLayoutContent() {
 }
 
 function ProvidersWrapper({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth()
-  
   const inner = (
     <ReceiptsProvider>
-      {config.enableRecipes ? (
-        <RecipesProvider>{children}</RecipesProvider>
-      ) : (
-        children
-      )}
+      <RecipesProvider>
+        {children}
+      </RecipesProvider>
     </ReceiptsProvider>
   )
 
-  if (user) {
-    return (
-      <ToastProvider>
+  // Always mount BOTH list providers so useListsUnified can call hooks unconditionally.
+  // This prevents Rules of Hooks violations and crashes when auth state changes.
+  return (
+    <ToastProvider>
+      <ListsProvider>
         <CollaborativeListsProvider>
           <HouseholdProvider>
             <PantryProvider>
@@ -153,18 +173,6 @@ function ProvidersWrapper({ children }: { children: React.ReactNode }) {
             </PantryProvider>
           </HouseholdProvider>
         </CollaborativeListsProvider>
-      </ToastProvider>
-    )
-  }
-
-  return (
-    <ToastProvider>
-      <ListsProvider>
-        <HouseholdProvider>
-          <PantryProvider>
-            {inner}
-          </PantryProvider>
-        </HouseholdProvider>
       </ListsProvider>
     </ToastProvider>
   )

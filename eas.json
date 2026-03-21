@@ -22,7 +22,11 @@
       "distribution": "internal"
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_ENABLE_PAYWALL": "true",
+        "EXPO_PUBLIC_RC_IOS_API_KEY": "appl_xhLJZbJmHRqQiSjLEzyXpsZfFss"
+      }
     },
     "ios-simulator": {
       "extends": "development",

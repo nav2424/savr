@@ -164,6 +164,7 @@ const CATEGORY_EMOJI_MAP: Record<string, string> = {
   'Snacks, Sweets & Desserts': '🍫',
   'Beverages': '🥤',
   'Frozen': '❄️',
+  'Household & Cleaning': '🧹',
   'Non-Food / Misc': '📦',
 }
 
@@ -182,6 +183,7 @@ const STANDARD_CATEGORIES = [
   'Snacks, Sweets & Desserts',
   'Beverages',
   'Frozen',
+  'Household & Cleaning',
   'Non-Food / Misc',
 ]
 
@@ -321,12 +323,18 @@ export function normalizeCategory(category: string): string {
     'misc': 'Non-Food / Misc',
     'other': 'Non-Food / Misc',
     'miscellaneous': 'Non-Food / Misc',
-    'household': 'Non-Food / Misc',
+    'household': 'Household & Cleaning',
+    'household & cleaning': 'Household & Cleaning',
+    'cleaning': 'Household & Cleaning',
+    'cleaning products': 'Household & Cleaning',
+    'household products': 'Household & Cleaning',
+    'paper goods': 'Household & Cleaning',
+    'parchment': 'Household & Cleaning',
+    'parchment paper': 'Household & Cleaning',
+    'foil': 'Household & Cleaning',
+    'aluminium foil': 'Household & Cleaning',
+    'aluminum foil': 'Household & Cleaning',
     'supplies': 'Non-Food / Misc',
-    'cleaning': 'Non-Food / Misc',
-    'paper goods': 'Non-Food / Misc',
-    'parchment': 'Non-Food / Misc',
-    'foil': 'Non-Food / Misc',
     'wrap': 'Non-Food / Misc',
     'paper': 'Non-Food / Misc',
     'bags': 'Non-Food / Misc',
@@ -548,10 +556,25 @@ export function detectCategoryFromName(itemName: string): string {
   ]
   
   // Frozen detection - check for frozen foods, pizzas, frozen meals
+  // "frozen" alone catches "frozen chicken", "frozen beef", etc.
   const frozenKeywords = [
     'frozen', 'ice cream', 'frozen vegetables', 'frozen fruit', 'frozen meal',
     'frozen pizza', 'pizza', 'pizzas', 'frozen entree', 'frozen dinner',
-    'frozen breakfast', 'frozen lunch', 'frozen snack', 'frozen appetizer'
+    'frozen breakfast', 'frozen lunch', 'frozen snack', 'frozen appetizer',
+    'frozen chicken', 'frozen beef', 'frozen fish', 'frozen salmon', 'frozen shrimp',
+    'frozen broccoli', 'frozen peas', 'frozen corn', 'frozen mixed vegetables'
+  ]
+  
+  // Household & Cleaning - detergent, cleaners, paper goods, foil, parchment, etc.
+  const cleaningKeywords = [
+    'detergent', 'bleach', 'cleaner', 'cleaning spray', 'all-purpose cleaner',
+    'glass cleaner', 'disinfectant', 'dish soap', 'laundry soap', 'soap', 'fabric softener',
+    'dryer sheet', 'sponge', 'scrubber', 'mop', 'broom', 'trash bag', 'trash bags',
+    'garbage bag', 'garbage bags', 'paper towel', 'paper towels', 'napkin', 'napkins',
+    'aluminum foil', 'aluminium foil', 'aluminium paper', 'tin foil', 'plastic wrap', 'cling wrap',
+    'ziploc', 'storage bag', 'storage bags', 'parchment paper', 'parchment', 'baking paper', 'wax paper',
+    'vim', 'javel', 'scouring pad', 'scouring powder', 'toilet cleaner', 'drain cleaner', 'window cleaner',
+    'downy', 'tide', 'gain', 'clorox'
   ]
   
   // Snacks detection
@@ -590,11 +613,11 @@ export function detectCategoryFromName(itemName: string): string {
     'instant', 'quick-cook', 'ready-to-eat'
   ]
 
+  // Non-food items that are NOT cleaning (go to Non-Food / Misc)
+  // Note: parchment, foil, napkin, paper towel, garbage bag are in cleaningKeywords (Household & Cleaning)
   const nonFoodKeywords = [
-    'parchment', 'foil', 'wrap', 'paper', 'storage bag', 'baking sheet',
-    'trash bag', 'zipper bag', 'cleaner', 'detergent', 'soap', 'sponge',
-    'napkin', 'towel', 'foil', 'filter', 'candle', 'bag', 'disposable',
-    'container', 'baguette bag', 'foil sheet'
+    'baking sheet', 'zipper bag', 'filter', 'candle', 'disposable', 'container', 'baguette bag',
+    'foil sheet', 'towel'
   ]
 
   // Baby & personal care - NOT pantry/food (check before pantry staples)
@@ -621,12 +644,17 @@ export function detectCategoryFromName(itemName: string): string {
   }
   
   // Frozen foods - check FIRST (highest priority)
-  // This catches "pizza with peppers" as frozen, not produce
+  // This catches "frozen chicken", "pizza with peppers" as frozen, not meat/produce
   if (frozenKeywords.some(keyword => lower.includes(keyword))) {
     return 'Frozen'
   }
   
-  // Grains, Bread & Pasta - check SECOND (before produce to catch tortillas correctly)
+  // Household & Cleaning - check SECOND (before food categories)
+  if (cleaningKeywords.some(keyword => lower.includes(keyword))) {
+    return 'Household & Cleaning'
+  }
+  
+  // Grains, Bread & Pasta - check THIRD (before produce to catch tortillas correctly)
   // This ensures tortillas always go to Grains, not Pantry Staples
   if (grainKeywords.some(keyword => lower.includes(keyword))) {
     return 'Grains, Bread & Pasta'

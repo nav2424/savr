@@ -768,18 +768,27 @@ export default function ProfileSettingsScreen() {
                     style: 'destructive',
                     onPress: async () => {
                       setDeletingAccount(true)
-                      const { error } = await deleteAccount()
-                      setDeletingAccount(false)
-                      if (error) {
+                      try {
+                        const { error } = await deleteAccount()
+                        if (error) {
+                          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+                          Alert.alert(
+                            'Deletion Failed',
+                            error.message || 'Failed to delete account. Please try again or contact support.'
+                          )
+                          return
+                        }
+                        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+                        router.replace('/welcome')
+                      } catch (err) {
                         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
                         Alert.alert(
                           'Deletion Failed',
-                          error.message || 'Failed to delete account. Please try again or contact support.'
+                          err instanceof Error ? err.message : 'An unexpected error occurred. Please try again or contact support.'
                         )
-                        return
+                      } finally {
+                        setDeletingAccount(false)
                       }
-                      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-                      router.replace('/welcome')
                     },
                   },
                 ]

@@ -6,6 +6,7 @@ import {
   toDetectionInput,
   toDetectionInputFromNormalized,
   buildUserAllergenConfig,
+  isPlainWaterProduct,
 } from './allergenEngine'
 import { toLegacyAllergenCheckResult } from './allergenEngine/legacyAdapter'
 import { getSourceLabel, setBestResult } from './AllergenResultStore'
@@ -904,6 +905,20 @@ class BarcodeService {
         }
       }
 
+      // Plain water (bottled, mineral, spring, etc.) has no allergens - always All Good
+      if (isPlainWaterProduct(product.name)) {
+        return {
+          hasAllergens: false,
+          detectedAllergens: [],
+          userAllergens: userAllergensRaw,
+          riskLevel: 'NO_MATCH_FOUND',
+          matches: [],
+          message: 'Safe for your household.',
+          dataSource,
+          sourceLabel: getSourceLabel(dataSource),
+        }
+      }
+
       const input = normalizedOFF
         ? toDetectionInputFromNormalized(normalizedOFF, product.name)
         : toDetectionInput(product, offProductData?.product)
@@ -1017,7 +1032,7 @@ export const barcodeService = BarcodeService.getInstance()
 
 /** Build AllergenCheckResult from engine output for OCR/manual flows (with dataSource) */
 export async function buildAllergenCheckResultFromEngine(
-  input: { ingredients_text: string; contains_text?: string; may_contain_text?: string },
+  input: { ingredients_text: string; contains_text?: string; may_contain_text?: string; product_name?: string },
   userId: string,
   dataSource: 'OCR' | 'MANUAL'
 ): Promise<AllergenCheckResult> {
@@ -1031,6 +1046,32 @@ export async function buildAllergenCheckResultFromEngine(
       riskLevel: 'NO_MATCH_FOUND',
       matches: [],
       message: 'No allergies set for your household.',
+      dataSource,
+      sourceLabel: getSourceLabel(dataSource),
+    }
+  }
+  // Plain water by product name or ingredients-only-water: always All Good
+  if (input.product_name && isPlainWaterProduct(input.product_name)) {
+    return {
+      hasAllergens: false,
+      detectedAllergens: [],
+      userAllergens: userAllergensRaw,
+      riskLevel: 'NO_MATCH_FOUND',
+      matches: [],
+      message: 'Safe for your household.',
+      dataSource,
+      sourceLabel: getSourceLabel(dataSource),
+    }
+  }
+  const ingredientsOnly = (input.ingredients_text || '').toLowerCase().replace(/^(ingredients?|ingrédients?)\s*[:\.]\s*/i, '').trim()
+  if (/^(water|eau|aqua|h2o)$/.test(ingredientsOnly)) {
+    return {
+      hasAllergens: false,
+      detectedAllergens: [],
+      userAllergens: userAllergensRaw,
+      riskLevel: 'NO_MATCH_FOUND',
+      matches: [],
+      message: 'Safe for your household.',
       dataSource,
       sourceLabel: getSourceLabel(dataSource),
     }

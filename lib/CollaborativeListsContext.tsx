@@ -86,9 +86,10 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
             }
 
             // Check for temp item with same name (optimistic update to replace)
-            const tempItemIndex = list.items.findIndex(i => 
+            const itemName = (item?.name && String(item.name).trim()) || ''
+            const tempItemIndex = list.items.findIndex(i =>
               i.id.startsWith('temp-') &&
-              i.name.toLowerCase().trim() === item.name.toLowerCase().trim()
+              (i.name || '').toLowerCase().trim() === itemName.toLowerCase()
             )
             if (tempItemIndex !== -1) {
               // Replace temp item with real one from database
@@ -96,12 +97,12 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
               const updatedItems = [...list.items]
               updatedItems[tempItemIndex] = {
                 id: item.id,
-                name: item.name,
-                category: item.category,
-                quantity: item.quantity,
-                completed: item.completed,
-                addedBy: item.added_by_name,
-                addedDate: item.added_date,
+                name: itemName || (item?.name && String(item.name).trim()) || 'Unknown item',
+                category: item.category || 'Groceries',
+                quantity: item.quantity || '1',
+                completed: item.completed ?? false,
+                addedBy: item.added_by_name || 'Unknown',
+                addedDate: item.added_date || new Date().toISOString().split('T')[0],
                 notes: item.notes,
               }
               return {
@@ -112,8 +113,8 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
             }
 
             // Check for duplicate by name (prevent duplicates from real-time)
-            const duplicateByName = list.items.find(i => 
-              i.name.toLowerCase().trim() === item.name.toLowerCase().trim() &&
+            const duplicateByName = list.items.find(i =>
+              (i.name || '').toLowerCase().trim() === itemName.toLowerCase() &&
               !i.id.startsWith('temp-')
             )
             if (duplicateByName) {
@@ -123,15 +124,16 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
             }
 
             // New item from another user - add it INSTANTLY
-            logger.debug('Adding new item from another user', { listId, itemName: item.name, addedBy: item.added_by_name })
+            const safeName = itemName || (item?.name && String(item.name).trim()) || 'Unknown item'
+            logger.debug('Adding new item from another user', { listId, itemName: safeName, addedBy: item.added_by_name })
             const newItem: ListItem = {
               id: item.id,
-              name: item.name,
-              category: item.category,
-              quantity: item.quantity,
-              completed: item.completed,
-              addedBy: item.added_by_name,
-              addedDate: item.added_date,
+              name: safeName,
+              category: item.category || 'Groceries',
+              quantity: item.quantity || '1',
+              completed: item.completed ?? false,
+              addedBy: item.added_by_name || 'Unknown',
+              addedDate: item.added_date || new Date().toISOString().split('T')[0],
               notes: item.notes,
             }
             const newItems = [...list.items, newItem]
@@ -379,11 +381,15 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
     listId: string,
     item: Omit<ListItem, 'id' | 'completed' | 'addedBy' | 'addedDate'>
   ) => {
+    // Guard: item.name is required - prevent crash from undefined/null
+    const itemName = (item?.name && String(item.name).trim()) || 'Unknown item'
+    const safeItem = { ...item, name: itemName, quantity: item?.quantity ?? '1', category: item?.category ?? 'Groceries' }
+
     // Check for duplicates FIRST
     const targetList = listsRef.current.find(l => l.id === listId)
     if (targetList) {
-      const isDuplicate = targetList.items.some(existingItem => 
-        existingItem.name.toLowerCase().trim() === item.name.toLowerCase().trim()
+      const isDuplicate = targetList.items.some(existingItem =>
+        (existingItem.name || '').toLowerCase().trim() === itemName.toLowerCase().trim()
       )
       
       if (isDuplicate) {
@@ -391,21 +397,21 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
         const { Alert } = await import('react-native')
         Alert.alert(
           'Already in List',
-          `"${item.name}" is already in your list`,
+          `"${itemName}" is already in your list`,
           [{ text: 'OK' }]
         )
         return
       }
     }
-    
+
     // Optimistic update - IMMEDIATELY update UI (synchronous)
     const tempId = `temp-${Date.now()}-${Math.random()}`
     const optimisticItem: ListItem = {
       id: tempId,
-      name: item.name,
-      category: item.category,
-      quantity: item.quantity,
-      notes: item.notes,
+      name: safeItem.name,
+      category: safeItem.category,
+      quantity: safeItem.quantity,
+      notes: safeItem.notes,
       completed: false,
       addedBy: 'You',
       addedDate: new Date().toISOString().split('T')[0],
@@ -428,21 +434,19 @@ export function CollaborativeListsProvider({ children }: { children: ReactNode }
       return updated
     })
 
-    // Ensure category is always provided (use AI-detected or default)
-    const categoryToUse = item.category || 'Groceries'
-    logger.debug('Adding item to list', { listId, name: item.name, category: categoryToUse })
-    
+    logger.debug('Adding item to list', { listId, name: safeItem.name, category: safeItem.category })
+
     const { error, data } = await collaborativeListsService.addItem(listId, {
-      name: item.name,
-      category: categoryToUse,
-      quantity: item.quantity,
-      notes: item.notes,
+      name: safeItem.name,
+      category: safeItem.category,
+      quantity: safeItem.quantity,
+      notes: safeItem.notes,
       completed: false,
       added_date: new Date().toISOString().split('T')[0],
     })
 
     if (error) {
-      logger.error('Error adding item to list', { error, listId, itemName: item.name })
+      logger.error('Error adding item to list', { error, listId, itemName: safeItem.name })
       // Rollback optimistic update on error
       setLists(prev => prev.map(list => {
         if (list.id === listId) {

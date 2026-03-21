@@ -1,5 +1,5 @@
 // SAVR More - Clean Settings & Profile Hub
-import React, { useState } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   ScrollView,
   Pressable,
   Dimensions,
+  AppState,
   Alert,
 } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
@@ -14,7 +15,7 @@ import { StatusBar as ExpoStatusBar } from 'expo-status-bar'
 import { useRouter } from 'expo-router'
 import { useSimpleTheme } from '../../lib/SimpleThemeContext'
 import { useAuth } from '../../lib/AuthContext'
-import { config } from '../../config'
+import { useSubscription } from '../../lib/SubscriptionContext'
 import * as Haptics from 'expo-haptics'
 import SageAssistantV2 from '../../components/SageAssistantV2'
 import { 
@@ -23,20 +24,37 @@ import {
   responsiveSpacing,
   getResponsiveDimensions 
 } from '../../lib/responsive'
+import { config } from '../../config'
+import {
+  formatAppFreeTrialRemaining,
+  formatAppFreeTrialEndDate,
+  clipExpiredAppFreeTrialEndForUi,
+} from '../../lib/freeTrial'
 
 const { width } = Dimensions.get('window')
 const responsiveDims = getResponsiveDimensions()
 
 // Settings menu items
-const getSettingsItems = () => {
+const getSettingsItems = (showFamilyManage: boolean) => {
   const items = [
     {
       id: 'subscription',
       title: 'Subscription',
-      description: 'SAVR Monthly, SAVR Annual – manage or upgrade',
+      description: 'Manage billing, change plan, upgrade or downgrade',
       icon: '⭐',
       route: '/subscription-management',
     },
+    ...(showFamilyManage
+      ? [
+          {
+            id: 'family',
+            title: 'Manage family',
+            description: 'Invite members to your family plan (subscriber)',
+            icon: '👨‍👩‍👧',
+            route: '/manage-family',
+          },
+        ]
+      : []),
     {
       id: 'profile',
       title: 'Profile & Settings',
@@ -66,6 +84,31 @@ export default function MoreScreen() {
   const { colors } = useSimpleTheme()
   const router = useRouter()
   const { user, signOut: authSignOut } = useAuth()
+  const { hasFamilyPlanSubscription, appFreeTrialEndsAtIso } = useSubscription()
+  const settingsItems = useMemo(
+    () => getSettingsItems(hasFamilyPlanSubscription),
+    [hasFamilyPlanSubscription]
+  )
+  const [trialTick, setTrialTick] = useState(0)
+
+  const welcomeAccessEndIso = useMemo(
+    () => clipExpiredAppFreeTrialEndForUi(appFreeTrialEndsAtIso),
+    [appFreeTrialEndsAtIso, trialTick]
+  )
+
+  useEffect(() => {
+    if (!appFreeTrialEndsAtIso || !config.enablePaywall) return undefined
+    const intervalId = setInterval(() => setTrialTick((n) => n + 1), 60_000)
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        setTrialTick((n) => n + 1)
+      }
+    })
+    return () => {
+      clearInterval(intervalId)
+      appStateSub.remove()
+    }
+  }, [appFreeTrialEndsAtIso])
   
   // Generate user profile data
   const userProfile = {
@@ -78,7 +121,7 @@ export default function MoreScreen() {
     // Handler for SAGE voice commands in More tab
   }
 
-  const handleItemPress = (item: ReturnType<typeof getSettingsItems>[number]) => {
+  const handleItemPress = (item: (typeof settingsItems)[number]) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
     
     if (item.route) {
@@ -143,7 +186,7 @@ export default function MoreScreen() {
 
         {/* Profile Section */}
         <View style={styles.profileSection}>
-          <Pressable style={styles.profileCard}>
+          <Pressable style={styles.profileCard} onPress={() => router.push('/profile-settings')}>
             <LinearGradient
               colors={['rgba(255, 255, 255, 0.4)', 'rgba(106, 149, 113, 0.1)', 'rgba(255, 255, 255, 0.2)']}
               start={{ x: 0, y: 0 }}
@@ -174,12 +217,12 @@ export default function MoreScreen() {
               end={{ x: 1, y: 1 }}
               style={styles.settingsCardGradient}
             >
-              {getSettingsItems().map((item, index) => (
+              {settingsItems.map((item, index) => (
                 <Pressable
                   key={item.id}
                   style={[
                     styles.settingsItem,
-                    index === getSettingsItems().length - 1 && styles.settingsItemLast
+                    index === settingsItems.length - 1 && styles.settingsItemLast
                   ]}
                   onPress={() => handleItemPress(item)}
                 >
@@ -189,6 +232,14 @@ export default function MoreScreen() {
                   <View style={styles.settingsItemContent}>
                     <Text style={styles.settingsItemTitle}>{item.title}</Text>
                     <Text style={styles.settingsItemDescription}>{item.description}</Text>
+                    {item.id === 'subscription' &&
+                    config.enablePaywall &&
+                    welcomeAccessEndIso ? (
+                      <Text style={styles.settingsTrialHint}>
+                        Welcome access: {formatAppFreeTrialRemaining(welcomeAccessEndIso)} · ends{' '}
+                        {formatAppFreeTrialEndDate(welcomeAccessEndIso)}
+                      </Text>
+                    ) : null}
                   </View>
                   <Text style={styles.settingsItemArrow}>›</Text>
                 </Pressable>
@@ -409,6 +460,13 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#666666',
     lineHeight: 18,
+  },
+  settingsTrialHint: {
+    fontSize: 12,
+    color: '#4A7C52',
+    fontWeight: '500',
+    marginTop: 6,
+    lineHeight: 16,
   },
   settingsItemArrow: {
     fontSize: 24,

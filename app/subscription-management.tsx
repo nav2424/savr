@@ -4,7 +4,7 @@
  * Paywall/subscription flow is enabled when EXPO_PUBLIC_ENABLE_PAYWALL=true.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -17,9 +17,11 @@ import {
   SafeAreaView,
   Platform,
   Linking,
+  AppState,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { Stack, useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSubscription } from '../lib/SubscriptionContext';
 import {
@@ -27,32 +29,101 @@ import {
   isPro,
   getCurrentOfferingOrThrow,
   logPaywallDiagnostics,
+  PRO_ENTITLEMENT,
+  REVENUECAT_OFFERINGS_HELP_URL,
 } from '../lib/revenuecat';
 import { PAYWALL_RESULT } from 'react-native-purchases-ui';
+import {
+  formatAppFreeTrialRemaining,
+  formatAppFreeTrialEndDate,
+  clipExpiredAppFreeTrialEndForUi,
+} from '../lib/freeTrial';
 
 export default function SubscriptionManagementScreen() {
   const router = useRouter();
   const {
     isSubscribed,
+    hasFamilyPremium,
+    hasFamilyPlanSubscription,
+    hasGrandfatheredPremium,
+    hasPremiumAccess,
     customerInfo,
     trialDaysRemaining,
+    appFreeTrialEndsAtIso,
     restorePurchases,
+    purchasePackage,
     presentCustomerCenter,
     getSubscriptionStatus,
   } = useSubscription();
 
   const [restoring, setRestoring] = useState(false);
+  const [welcomeAccessTick, setWelcomeAccessTick] = useState(0);
+  const [isSyncingPurchase, setIsSyncingPurchase] = useState(false);
 
-  const activeEntitlement = customerInfo?.entitlements.active['pro'];
-  const subscriptionType =
-    activeEntitlement?.productIdentifier?.includes('annual') ||
-    activeEntitlement?.productIdentifier === 'annual_subscription_1'
+  const welcomeAccessEndIso = useMemo(
+    () => clipExpiredAppFreeTrialEndForUi(appFreeTrialEndsAtIso),
+    [appFreeTrialEndsAtIso, welcomeAccessTick]
+  );
+
+  useEffect(() => {
+    if (!appFreeTrialEndsAtIso) return undefined;
+    const intervalId = setInterval(() => setWelcomeAccessTick((n) => n + 1), 60_000);
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        setWelcomeAccessTick((n) => n + 1);
+      }
+    });
+    return () => {
+      clearInterval(intervalId);
+      appStateSub.remove();
+    };
+  }, [appFreeTrialEndsAtIso]);
+  useFocusEffect(
+    React.useCallback(() => {
+      void getSubscriptionStatus({
+        refreshFromStore: true,
+        skipSyncFlag: true,
+      });
+    }, [getSubscriptionStatus])
+  );
+  const [openingPlans, setOpeningPlans] = useState(false);
+
+  const activeEntitlement =
+    customerInfo?.entitlements.active[PRO_ENTITLEMENT];
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const syncUntilPro = async (): Promise<boolean> => {
+    setIsSyncingPurchase(true);
+    for (let i = 0; i < 4; i += 1) {
+      await getSubscriptionStatus();
+      if (await isPro()) {
+        setIsSyncingPurchase(false);
+        return true;
+      }
+      await wait(900);
+    }
+    setIsSyncingPurchase(false);
+    return false;
+  };
+  const productId = activeEntitlement?.productIdentifier ?? '';
+  const isAnnualPlan =
+    productId.includes('annual') || productId === 'annual_subscription_1';
+  const subscriptionType = hasFamilyPlanSubscription
+    ? isAnnualPlan
+      ? 'Family · Annual'
+      : 'Family · Monthly'
+    : isAnnualPlan
       ? 'Annual'
       : 'Monthly';
   const expirationDate = activeEntitlement?.expirationDate
     ? new Date(activeEntitlement.expirationDate)
     : null;
   const willRenew = activeEntitlement?.willRenew || false;
+  const expirationMs = expirationDate?.getTime();
+  const cancelledButStillActive =
+    !willRenew &&
+    expirationMs !== undefined &&
+    !Number.isNaN(expirationMs) &&
+    expirationMs > Date.now();
 
   const handleRestore = async () => {
     setRestoring(true);
@@ -66,55 +137,110 @@ export default function SubscriptionManagementScreen() {
     }
   };
 
-  const handleManageSubscription = async () => {
-    try {
-      await presentCustomerCenter({
-        callbacks: {
-          onRestoreCompleted: async () => {
-            await restorePurchases();
-          },
-        },
-      });
-    } catch {
-      if (Platform.OS === 'ios') {
-        Linking.openURL('https://apps.apple.com/account/subscriptions');
-      } else {
-        Linking.openURL('https://play.google.com/store/account/subscriptions');
-      }
+  const openStoreSubscriptionsSettings = () => {
+    if (Platform.OS === 'ios') {
+      Linking.openURL('https://apps.apple.com/account/subscriptions');
+    } else {
+      Linking.openURL('https://play.google.com/store/account/subscriptions');
     }
   };
 
-  const handleUpgrade = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  const handleManageSubscription = async () => {
+    const opened = await presentCustomerCenter({
+      callbacks: {
+        onRestoreCompleted: async () => {
+          await restorePurchases();
+        },
+      },
+    });
+    if (!opened) {
+      openStoreSubscriptionsSettings();
+    }
+  };
 
+  /** Hosted paywall: subscribe, upgrade, or change plan (StoreKit / Play apply eligibility rules). */
+  const handleOpenPlansPaywall = async () => {
+    try {
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    } catch {
+      /* Haptics unavailable on some simulators / iPad configurations */
+    }
+
+    setOpeningPlans(true);
     try {
       const offering = await getCurrentOfferingOrThrow();
       const isProBefore = await isPro();
       logPaywallDiagnostics(offering, isProBefore);
 
       const result = await showHostedPaywall();
-
-      const isProAfter = await isPro();
+      const isProAfter =
+        result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED
+          ? await syncUntilPro()
+          : await isPro();
       if (__DEV__) {
         logPaywallDiagnostics(offering, isProAfter);
       }
 
-      if (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) {
-        await getSubscriptionStatus();
-      } else if (result === PAYWALL_RESULT.NOT_PRESENTED) {
+      if (result === PAYWALL_RESULT.NOT_PRESENTED) {
         Alert.alert(
           'Unable to Load Subscription',
-          'The subscription paywall could not be loaded. Ensure RevenueCat API keys are set and your offering is Current in the dashboard.'
+          'We could not open the subscription screen. Check your connection, then try again. If this continues, update the app from the App Store.'
+        );
+      } else if (
+        (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) &&
+        !isProAfter
+      ) {
+        Alert.alert(
+          'Purchase still syncing',
+          'Your purchase went through, but confirmation is still syncing. Tap Restore Purchases in a few seconds if access does not unlock automatically.'
         );
       }
     } catch (err) {
       if (__DEV__) {
-        console.warn('[RevenueCat] handleUpgrade failed:', err);
+        console.warn('[RevenueCat] handleOpenPlansPaywall failed:', err);
       }
-      Alert.alert(
-        'Error',
-        err instanceof Error ? err.message : 'Failed to load subscription options.'
-      );
+      const isBridgeArgError =
+        err instanceof Error &&
+        err.message.includes('RCTPromiseResolveBlock');
+      if (isBridgeArgError) {
+        const offering = await getCurrentOfferingOrThrow().catch(() => null);
+        const monthly =
+          offering?.monthly ??
+          offering?.availablePackages.find((p) =>
+            p.identifier.toLowerCase().includes('monthly')
+          ) ??
+          offering?.availablePackages[0];
+        if (monthly) {
+          const purchase = await purchasePackage(monthly);
+          if (purchase.success) {
+            const synced = await syncUntilPro();
+            if (!synced) {
+              Alert.alert(
+                'Purchase still syncing',
+                'Your purchase completed, but confirmation is still syncing. Tap Restore Purchases in a few seconds if access is still locked.'
+              );
+            }
+            return;
+          }
+          if (purchase.error && purchase.error !== 'Purchase cancelled') {
+            Alert.alert('Couldn’t complete purchase', purchase.error);
+            return;
+          }
+        }
+      }
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Something went wrong loading subscription options. Check your internet connection and try again.';
+      Alert.alert('Couldn’t Open Plans', message, [
+        { text: 'OK', style: 'cancel' },
+        {
+          text: 'Why is this happening?',
+          onPress: () => Linking.openURL(REVENUECAT_OFFERINGS_HELP_URL),
+        },
+      ]);
+    } finally {
+      setOpeningPlans(false);
     }
   };
 
@@ -133,7 +259,7 @@ export default function SubscriptionManagementScreen() {
     </View>
   );
 
-  if (!isSubscribed) {
+  if (!hasPremiumAccess) {
     return (
       <SafeAreaView style={styles.container}>
         <Stack.Screen
@@ -145,20 +271,115 @@ export default function SubscriptionManagementScreen() {
         />
         <BackHeader />
         <View style={styles.notSubscribedContainer}>
-          <Text style={styles.notSubscribedIcon}>🔒</Text>
-          <Text style={styles.notSubscribedTitle}>No Active Subscription</Text>
-          <Text style={styles.notSubscribedText}>
-            Subscribe to unlock all SAVR features
+          <Text style={styles.notSubscribedIcon}>
+            {welcomeAccessEndIso ? '⏱️' : '🔒'}
           </Text>
+          <Text style={styles.notSubscribedTitle}>
+            {welcomeAccessEndIso
+              ? 'Welcome access active'
+              : 'No Active Subscription'}
+          </Text>
+          {welcomeAccessEndIso ? (
+            <View style={styles.appTrialBanner}>
+              <Text style={styles.appTrialBannerPrimary}>
+                {formatAppFreeTrialRemaining(welcomeAccessEndIso)}
+              </Text>
+              <Text style={styles.appTrialBannerSecondary}>
+                Full premium features until {formatAppFreeTrialEndDate(welcomeAccessEndIso)}. This
+                new-member access is from SAVR and is separate from introductory pricing in the App
+                Store or Google Play.
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.notSubscribedText}>
+              Subscribe to unlock all SAVR features
+            </Text>
+          )}
+          {isSyncingPurchase ? (
+            <View style={styles.syncingBadge}>
+              <ActivityIndicator color="#6A9571" size="small" />
+              <Text style={styles.syncingBadgeText}>Syncing purchase…</Text>
+            </View>
+          ) : null}
 
           <TouchableOpacity
             style={styles.subscribeButton}
-            onPress={handleUpgrade}
+            onPress={handleOpenPlansPaywall}
             activeOpacity={0.8}
+            disabled={openingPlans}
           >
-            <Text style={styles.subscribeButtonText}>View Plans</Text>
+            {openingPlans ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text style={styles.subscribeButtonText}>View Plans</Text>
+            )}
           </TouchableOpacity>
 
+          <TouchableOpacity
+            style={styles.restoreButtonAlt}
+            onPress={handleRestore}
+            disabled={restoring}
+          >
+            {restoring ? (
+              <ActivityIndicator color="#6A9571" size="small" />
+            ) : (
+              <Text style={styles.restoreButtonText}>Restore Purchases</Text>
+            )}
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.restoreButtonAlt}
+            onPress={handleManageSubscription}
+          >
+            <Text style={styles.restoreButtonText}>
+              Manage billing & cancellations
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (hasGrandfatheredPremium && !isSubscribed && !hasFamilyPremium) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Stack.Screen
+          options={{
+            title: 'Subscription',
+            headerStyle: { backgroundColor: '#6A9571' },
+            headerTintColor: '#FFFFFF',
+          }}
+        />
+        <BackHeader />
+        <View style={styles.notSubscribedContainer}>
+          <Text style={styles.notSubscribedIcon}>🎁</Text>
+          <Text style={styles.notSubscribedTitle}>Complimentary lifetime access</Text>
+          <Text style={styles.notSubscribedText}>
+            Thank you for being an early SAVR member — you have full premium access at no charge. No subscription
+            is required on your account.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (hasFamilyPremium && !isSubscribed) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Stack.Screen
+          options={{
+            title: 'Subscription',
+            headerStyle: { backgroundColor: '#6A9571' },
+            headerTintColor: '#FFFFFF',
+          }}
+        />
+        <BackHeader />
+        <View style={styles.notSubscribedContainer}>
+          <Text style={styles.notSubscribedIcon}>👨‍👩‍👧</Text>
+          <Text style={styles.notSubscribedTitle}>SAVR Premium (Family)</Text>
+          <Text style={styles.notSubscribedText}>
+            You have access through a family plan. Billing and plan changes are managed by the subscriber who
+            invited you.
+          </Text>
           <TouchableOpacity
             style={styles.restoreButtonAlt}
             onPress={handleRestore}
@@ -191,14 +412,20 @@ export default function SubscriptionManagementScreen() {
           style={styles.activeCard}
         >
           <Text style={styles.activeIcon}>✨</Text>
-          <Text style={styles.activeTitle}>SAVR Premium</Text>
-          <Text style={styles.activeSubtitle}>Active Subscription</Text>
+          <Text style={styles.activeTitle}>
+            {hasFamilyPlanSubscription ? 'SAVR Premium (Family)' : 'SAVR Premium'}
+          </Text>
+          <Text style={styles.activeSubtitle}>
+            {cancelledButStillActive
+              ? 'Cancelled — premium until period ends'
+              : 'Active Subscription'}
+          </Text>
 
           {trialDaysRemaining !== null && trialDaysRemaining > 0 && (
             <View style={styles.trialBadge}>
               <Text style={styles.trialText}>
-                🎁 {trialDaysRemaining}{' '}
-                {trialDaysRemaining === 1 ? 'day' : 'days'} left in trial
+                🎁 Store intro pricing: {trialDaysRemaining}{' '}
+                {trialDaysRemaining === 1 ? 'day' : 'days'} left
               </Text>
             </View>
           )}
@@ -214,9 +441,23 @@ export default function SubscriptionManagementScreen() {
 
           <View style={styles.detailRow}>
             <Text style={styles.detailLabel}>Status</Text>
-            <View style={styles.statusBadge}>
-              <Text style={styles.statusText}>
-                {willRenew ? '✅ Active' : '⚠️ Expires Soon'}
+            <View
+              style={[
+                styles.statusBadge,
+                cancelledButStillActive && styles.statusBadgeCancelled,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.statusText,
+                  cancelledButStillActive && styles.statusTextCancelled,
+                ]}
+              >
+                {willRenew
+                  ? '✅ Active'
+                  : cancelledButStillActive
+                    ? '🔕 Cancelled (access until end date)'
+                    : '⚠️ Expires Soon'}
               </Text>
             </View>
           </View>
@@ -224,7 +465,7 @@ export default function SubscriptionManagementScreen() {
           {expirationDate && (
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>
-                {willRenew ? 'Renews' : 'Expires'}
+                {willRenew ? 'Renews' : 'Access until'}
               </Text>
               <Text style={styles.detailValue}>
                 {expirationDate.toLocaleDateString()}
@@ -234,7 +475,13 @@ export default function SubscriptionManagementScreen() {
 
           <View style={styles.detailRow}>
             <Text style={styles.detailLabel}>Auto-Renew</Text>
-            <Text style={styles.detailValue}>{willRenew ? 'On' : 'Off'}</Text>
+            <Text style={styles.detailValue}>
+              {willRenew
+                ? 'On'
+                : cancelledButStillActive
+                  ? 'Off (not renewing)'
+                  : 'Off'}
+            </Text>
           </View>
         </View>
 
@@ -259,6 +506,10 @@ export default function SubscriptionManagementScreen() {
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Manage</Text>
+          <Text style={styles.sectionHint}>
+            Manage renewals and cancellations in your store account. Switch
+            monthly ↔ annual from plans.
+          </Text>
 
           <TouchableOpacity
             style={styles.actionButton}
@@ -266,22 +517,63 @@ export default function SubscriptionManagementScreen() {
           >
             <View style={styles.actionLeft}>
               <Text style={styles.actionIcon}>⚙️</Text>
-              <Text style={styles.actionText}>Manage Subscription</Text>
+              <View style={styles.actionTextBlock}>
+                <Text style={styles.actionText}>Manage subscription</Text>
+                <Text style={styles.actionSubtext}>
+                  Billing, cancel, restore — RevenueCat or App Store / Play
+                </Text>
+              </View>
             </View>
             <Text style={styles.actionArrow}>›</Text>
           </TouchableOpacity>
 
-          {subscriptionType === 'Monthly' && (
-            <TouchableOpacity style={styles.actionButton} onPress={handleUpgrade}>
+          {hasFamilyPlanSubscription ? (
+            <TouchableOpacity
+              style={styles.actionButton}
+              onPress={() => {
+                try {
+                  void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                } catch {
+                  /* optional */
+                }
+                router.push('/manage-family');
+              }}
+            >
               <View style={styles.actionLeft}>
-                <Text style={styles.actionIcon}>💎</Text>
-                <Text style={styles.actionText}>
-                  Upgrade to Annual (Save 33%)
-                </Text>
+                <Text style={styles.actionIcon}>👨‍👩‍👧</Text>
+                <View style={styles.actionTextBlock}>
+                  <Text style={styles.actionText}>Manage family sharing</Text>
+                  <Text style={styles.actionSubtext}>
+                    Invites, seats, and who has access on your family plan
+                  </Text>
+                </View>
               </View>
               <Text style={styles.actionArrow}>›</Text>
             </TouchableOpacity>
-          )}
+          ) : null}
+
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={handleOpenPlansPaywall}
+            disabled={openingPlans}
+          >
+            <View style={styles.actionLeft}>
+              <Text style={styles.actionIcon}>💎</Text>
+              <View style={styles.actionTextBlock}>
+                <Text style={styles.actionText}>Change plan</Text>
+                <Text style={styles.actionSubtext}>
+                  {openingPlans
+                    ? 'Opening plans…'
+                    : 'View plans — upgrade or downgrade when the store allows'}
+                </Text>
+              </View>
+            </View>
+            {openingPlans ? (
+              <ActivityIndicator color="#6A9571" size="small" />
+            ) : (
+              <Text style={styles.actionArrow}>›</Text>
+            )}
+          </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.actionButton}
@@ -390,7 +682,13 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     color: '#1A1A1A',
-    marginBottom: 16,
+    marginBottom: 8,
+  },
+  sectionHint: {
+    fontSize: 13,
+    color: '#666',
+    lineHeight: 18,
+    marginBottom: 12,
   },
   detailRow: {
     flexDirection: 'row',
@@ -420,6 +718,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#4CAF50',
   },
+  statusBadgeCancelled: {
+    backgroundColor: '#FFF3E0',
+  },
+  statusTextCancelled: {
+    color: '#E65100',
+  },
   featureText: {
     fontSize: 15,
     color: '#1A1A1A',
@@ -439,6 +743,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flex: 1,
   },
+  actionTextBlock: {
+    flex: 1,
+  },
   actionIcon: {
     fontSize: 24,
     marginRight: 12,
@@ -446,7 +753,13 @@ const styles = StyleSheet.create({
   actionText: {
     fontSize: 16,
     color: '#1A1A1A',
-    fontWeight: '500',
+    fontWeight: '600',
+  },
+  actionSubtext: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 2,
+    lineHeight: 16,
   },
   actionArrow: {
     fontSize: 24,
@@ -485,6 +798,47 @@ const styles = StyleSheet.create({
     color: '#666',
     textAlign: 'center',
     marginBottom: 30,
+  },
+  appTrialBanner: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: 'rgba(106, 149, 113, 0.12)',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(106, 149, 113, 0.35)',
+  },
+  appTrialBannerPrimary: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#3D5C45',
+    textAlign: 'center',
+    marginBottom: 6,
+  },
+  appTrialBannerSecondary: {
+    fontSize: 14,
+    color: '#5A5A5A',
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  syncingBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(106, 149, 113, 0.12)',
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(106, 149, 113, 0.35)',
+  },
+  syncingBadgeText: {
+    color: '#3D5C45',
+    fontWeight: '600',
+    fontSize: 13,
   },
   subscribeButton: {
     backgroundColor: '#6A9571',

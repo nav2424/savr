@@ -123,16 +123,19 @@ if (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) {
 
 ### 6.3 Customer Center
 
-- **Subscription Management** screen calls `presentCustomerCenter({ callbacks })` for “Manage Subscription”.
-- If the native module isn’t available (e.g. Expo Go), the app falls back to opening the store subscription URL (Apple / Google).
+- **Subscription Management** screen calls `presentCustomerCenter({ callbacks })` for “Manage subscription”; it returns `true` if the sheet opened, `false` otherwise.
+- If the Customer Center isn’t available (e.g. Expo Go), the app falls back to opening the store subscription URL (Apple / Google).
 
 ```ts
 const { presentCustomerCenter, restorePurchases } = useSubscription();
-await presentCustomerCenter({
+const opened = await presentCustomerCenter({
   callbacks: {
     onRestoreCompleted: async () => await restorePurchases(),
   },
 });
+if (!opened) {
+  // Linking.openURL(App Store or Play subscriptions) …
+}
 ```
 
 ### 6.4 Customer info and purchases

@@ -467,6 +467,67 @@ TOTAL                         3.99
     expect(parsed.store).toBe('Walmart')
     expect(parsed.date).toBeDefined()
   })
+
+  it('parses Costco "N @ X.XX" quantity format correctly', () => {
+    const text = `
+COSTCO WHOLESALE
+TR# 1
+313973 BL. D'OEUFS          14.99
+1868769 ALANI
+12 @ 9,99                   119,88
+SUBTOTAL                   160,79
+TOTAL                      160,79
+`
+    const parsed = parseReceiptOcrText(text)
+    const eggs = parsed.items.find(i => /oeuf|egg/i.test(i.name))
+    const alani = parsed.items.find(i => /alani/i.test(i.name))
+    expect(eggs).toBeDefined()
+    expect(eggs!.quantity).toBe(1)
+    expect(eggs!.price).toBe(14.99)
+    expect(alani).toBeDefined()
+    expect(alani!.quantity).toBe(12)
+    expect(alani!.price).toBe(9.99)
+    expect(alani!.lineTotal).toBe(119.88)
+  })
+
+  it('excludes ECOFRAIS and CONSIGNE QC fees from items', () => {
+    const text = `
+COSTCO WHOLESALE
+TR# 1
+1868769 ALANI
+12 @ 9,99                   119,88
+12 @ 0,36
+*ECOFRAIS 4,32
+12 @ 1,80
+CONSIGNE QC 21.60
+SUBTOTAL                   160,79
+TOTAL                      160,79
+`
+    const parsed = parseReceiptOcrText(text)
+    const ecofrais = parsed.items.find(i => /ecofrais/i.test(i.name))
+    const consigne = parsed.items.find(i => /consigne/i.test(i.name))
+    expect(ecofrais).toBeUndefined()
+    expect(consigne).toBeUndefined()
+    expect(parsed.items.length).toBe(1)
+    expect(parsed.items[0].name).toMatch(/alani/i)
+    expect(parsed.items[0].quantity).toBe(12)
+  })
+
+  it('parses quantity from "N @ X.XX" pattern on single line', () => {
+    const text = `
+TR# 1
+TE# 1
+Soda 3 @ 1.99 5.97
+SUBTOTAL                    5.97
+TOTAL                       5.97
+`
+    const parsed = parseReceiptOcrText(text)
+    const soda = parsed.items.find(i => /soda/i.test(i.name))
+    expect(soda).toBeDefined()
+    expect(soda!.quantity).toBe(3)
+    expect(soda!.price).toBe(1.99)
+    expect(soda!.lineTotal).toBe(5.97)
+  })
 })
 
 describe('buildScannedItemsFromOcr', () => {

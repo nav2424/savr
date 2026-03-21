@@ -94,10 +94,13 @@ export function ListsProvider({ children }: { children: ReactNode }) {
   }
 
   const addItemToList = (listId: string, item: Omit<ListItem, 'id' | 'completed' | 'addedBy' | 'addedDate'>) => {
+    const itemName = (item?.name && String(item.name).trim()) || 'Unknown item'
+    const safeItem = { ...item, name: itemName, quantity: item?.quantity ?? '1', category: item?.category ?? 'Groceries' }
+
     setLists(prev => prev.map(list => {
       if (list.id === listId) {
         const newItem: ListItem = {
-          ...item,
+          ...safeItem,
           id: Date.now().toString(),
           completed: false,
           addedBy: 'You',

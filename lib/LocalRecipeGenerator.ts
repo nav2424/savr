@@ -827,19 +827,21 @@ class LocalRecipeGenerator {
   }) {
     const { pantryItems, allergies, dietaryPreferences, count } = context
 
-    console.log('🏗️ LocalRecipeGenerator called with:', {
-      pantryItems: pantryItems.length,
-      allergies: allergies.length,
-      dietary: dietaryPreferences.length,
-      count
-    })
+    if (__DEV__) {
+      console.log('🏗️ LocalRecipeGenerator called with:', {
+        pantryItems: pantryItems.length,
+        allergies: allergies.length,
+        dietary: dietaryPreferences.length,
+        count
+      })
+    }
 
     if (!pantryItems || pantryItems.length === 0) {
-      console.warn('No pantry items provided')
+      if (__DEV__) console.warn('No pantry items provided')
       return []
     }
 
-    console.log(`🏗️ Building recipes from ${pantryItems.length} pantry items...`)
+    if (__DEV__) console.log(`🏗️ Building recipes from ${pantryItems.length} pantry items...`)
 
     // Filter recipes based on allergies and dietary preferences
     let availableRecipes = RECIPE_TEMPLATES.filter(recipe => {

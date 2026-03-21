@@ -9,7 +9,14 @@ import { logger } from './Logger'
 import { DatabaseError, getErrorMessage } from './errors'
 import { getSmtpErrorMessage } from './smtpDiagnostics'
 import * as Linking from 'expo-linking'
-import { getAuthTokensFromUrl, createSessionFromUrl, getEmailVerificationRedirectUrl } from './authDeepLink'
+import {
+  urlMayNeedSessionExchange,
+  processAuthDeepLink,
+  getEmailVerificationRedirectUrl,
+} from './authDeepLink'
+import { config } from '../config'
+import Purchases from 'react-native-purchases'
+import { initializeRevenueCat } from './revenuecat'
 
 interface AuthContextType {
   user: User | null
@@ -234,9 +241,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const initAuth = async () => {
       // If app was opened from email verification link, create session from URL first so user is signed in
       const initialUrl = await Linking.getInitialURL()
-      if (initialUrl && getAuthTokensFromUrl(initialUrl).access_token) {
-        const ok = await createSessionFromUrl(initialUrl)
-        if (ok) logger.info('Session created from email verification link')
+      if (initialUrl && urlMayNeedSessionExchange(initialUrl)) {
+        const ok = await processAuthDeepLink(initialUrl)
+        if (ok) logger.info('Session created from auth redirect link')
         if (cancelled) return
       }
 
@@ -279,9 +286,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Handle deep link when app is opened from background (e.g. user taps email verification link)
     const linkingSubscription = Linking.addEventListener('url', async (event) => {
-      if (getAuthTokensFromUrl(event.url).access_token) {
-        await createSessionFromUrl(event.url)
-        // setSession() triggers onAuthStateChange; session/user state will update there
+      if (urlMayNeedSessionExchange(event.url)) {
+        await processAuthDeepLink(event.url)
       }
     })
 
@@ -320,6 +326,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       authSubscription.unsubscribe()
     }
   }, [buildFallbackUser, loadUserProfile])
+
+  // Tie RevenueCat customer to Supabase user when paywall is enabled (restore/purchase per account).
+  useEffect(() => {
+    if (!config.enablePaywall) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        await initializeRevenueCat()
+        if (cancelled) return
+        const uid = session?.user?.id
+        if (uid) {
+          await Purchases.logIn(uid)
+          // Must match auth.users.id — RevenueCat REST / edge functions use this subscriber id.
+          console.log(`[RevenueCat] Identifying App User ID: ${uid}`)
+        }
+      } catch (e) {
+        logger.debug('RevenueCat user sync skipped or failed', { error: e })
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [session?.user?.id])
 
   const signIn = async (email: string, password: string) => {
     try {
@@ -544,20 +573,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (error) {
         logger.error('Account deletion failed', { error, userId: user.id })
-        return { error: error instanceof Error ? error : new Error(String(error)) }
+        const msg = error?.message || (typeof error === 'string' ? error : 'Failed to delete account')
+        return { error: new Error(msg) }
       }
 
       if (data?.error) {
         logger.error('Account deletion returned error', { error: data.error, userId: user.id })
-        return { error: new Error(data.error.message || data.error || 'Failed to delete account') }
+        const msg = typeof data.error === 'object' ? data.error?.message : data.error
+        return { error: new Error(msg || 'Failed to delete account') }
       }
 
       logger.info('Account deleted successfully', { userId: user.id })
-      await signOut()
+      try {
+        await signOut()
+      } catch (signOutErr) {
+        logger.warn('SignOut after deletion failed (account was deleted)', { error: signOutErr })
+        setUser(null)
+        setSession(null)
+      }
       return { error: null }
     } catch (error) {
       logger.error('Account deletion exception', { error, userId: user.id })
-      return { error: error instanceof Error ? error : new Error('Failed to delete account') }
+      const msg = error instanceof Error ? error.message : 'Failed to delete account'
+      return { error: new Error(msg) }
     }
   }
 

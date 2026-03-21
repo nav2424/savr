@@ -245,21 +245,27 @@ export default function AllergiesScreen() {
 
     setSaving(true)
     try {
+      // Preserve all preference fields (notifications, activeHouseholdId, etc.) and only update allergies.
       const preferences = await userPreferencesService.loadPreferences(user.id)
+      const base = preferences ?? ({} as UserPreferences)
       const updatedPreferences: UserPreferences = {
-        location: preferences?.location || { country: '', province: '' },
-        household: preferences?.household || { size: '1', hasChildren: null, hasPets: null },
+        ...base,
+        location: base.location ?? { country: '', province: '' },
+        household: base.household ?? { size: '1', hasChildren: null, hasPets: null },
         dietary: {
-          preferences: preferences?.dietary?.preferences || [],
-          allergies: allergies,
-          cuisines: preferences?.dietary?.cuisines || [],
+          preferences: base.dietary?.preferences ?? [],
+          cuisines: base.dietary?.cuisines ?? [],
+          allergies,
+          // canonical list is maintained by the service
+          allergies_canonical: base.dietary?.allergies_canonical,
         },
-        shopping: preferences?.shopping || { frequency: '', stores: [], method: '' },
-        budget: preferences?.budget || { monthly: '', savingsGoal: '' },
-        profile: preferences?.profile,
+        shopping: base.shopping ?? { frequency: '', stores: [], method: '' },
+        budget: base.budget ?? { monthly: '', savingsGoal: '' },
       }
 
+      // Normalize + persist to AsyncStorage (and Supabase) so scanning uses canonical IDs consistently.
       await userPreferencesService.savePreferences(updatedPreferences, user.id)
+      await userPreferencesService.normalizeAndSaveAllergies(allergies, user.id)
       
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
       Alert.alert(

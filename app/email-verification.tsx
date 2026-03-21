@@ -7,6 +7,12 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
+  TextInput,
+  Keyboard,
+  KeyboardAvoidingView,
+  ScrollView,
+  Platform,
+  InputAccessoryView,
 } from 'react-native'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { LinearGradient } from 'expo-linear-gradient'
@@ -16,14 +22,19 @@ import * as Linking from 'expo-linking'
 import * as Haptics from 'expo-haptics'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
-import { createSessionFromUrl, getEmailVerificationRedirectUrl } from '../lib/authDeepLink'
+import { processAuthDeepLink, getEmailVerificationRedirectUrl } from '../lib/authDeepLink'
+import { openMailAppInbox } from '../lib/openMailApp'
 import { getSmtpErrorMessage, getSmtpSetupInstructions } from '../lib/smtpDiagnostics'
 import { useToast } from '../lib/ToastContext'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { replaceAfterEmailVerified } from '../lib/postVerifyNavigation'
 
 const PENDING_EMAIL_STORAGE_KEY = 'email_verification_pending_email_v1'
+const OTP_ACCESSORY_ID = 'savr-email-otp-accessory'
 
 export default function EmailVerificationScreen() {
   const router = useRouter()
+  const insets = useSafeAreaInsets()
   const params = useLocalSearchParams<{ email?: string; token?: string; type?: string }>()
   const { session, user } = useAuth()
   const { showToast } = useToast()
@@ -32,7 +43,8 @@ export default function EmailVerificationScreen() {
   const [userEmail, setUserEmail] = useState<string>('')
   const [processingLink, setProcessingLink] = useState(false)
   const [resendCooldown, setResendCooldown] = useState(0) // Cooldown in seconds
-  const [lastResendTime, setLastResendTime] = useState<number | null>(null)
+  const [otpCode, setOtpCode] = useState('')
+  const [verifyingOtp, setVerifyingOtp] = useState(false)
 
   // Get user email from multiple sources and persist for resend (session may be missing for unverified users)
   useEffect(() => {
@@ -62,8 +74,9 @@ export default function EmailVerificationScreen() {
           if (currentSession?.user?.email) {
             email = currentSession.user.email
           }
-        } catch (error) {
-          if (!error?.message?.includes('Auth session missing')) {
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : String(error)
+          if (!msg.includes('Auth session missing')) {
             console.error('Error getting session email:', error)
           }
         }
@@ -74,8 +87,9 @@ export default function EmailVerificationScreen() {
         try {
           const { data: { user: currentUser } } = await supabase.auth.getUser()
           email = currentUser?.email || ''
-        } catch (error) {
-          if (!error?.message?.includes('Auth session missing')) {
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : String(error)
+          if (!msg.includes('Auth session missing')) {
             console.error('Error getting user email:', error)
           }
         }
@@ -126,8 +140,7 @@ export default function EmailVerificationScreen() {
         setProcessingLink(true)
         console.log('📧 Processing verification link:', url)
 
-        // Establish session from URL tokens so user is signed in when returning from email link
-        const sessionCreated = await createSessionFromUrl(url)
+        const sessionCreated = await processAuthDeepLink(url)
         if (sessionCreated) {
           console.log('✅ Session created from verification link')
         }
@@ -137,14 +150,24 @@ export default function EmailVerificationScreen() {
           console.error('Error getting session from link:', error)
           return
         }
-        if (session) {
-          const { data: { user } } = await supabase.auth.getUser()
-          if (user?.email_confirmed_at) {
-            console.log('✅ Email verified via deep link!')
-            try { await AsyncStorage.removeItem(PENDING_EMAIL_STORAGE_KEY) } catch { /* non-blocking */ }
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-            router.replace('/(tabs)')
+        if (!session) return
+
+        let user = (await supabase.auth.getUser()).data.user
+        if (user && !user.email_confirmed_at) {
+          await supabase.auth.refreshSession().catch(() => {})
+          await new Promise((r) => setTimeout(r, 350))
+          user = (await supabase.auth.getUser()).data.user
+        }
+
+        if (user?.email_confirmed_at) {
+          console.log('✅ Email verified via deep link!')
+          try {
+            await AsyncStorage.removeItem(PENDING_EMAIL_STORAGE_KEY)
+          } catch {
+            /* non-blocking */
           }
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+          void replaceAfterEmailVerified((h) => router.replace(h as any))
         }
       } catch (error) {
         console.error('Error processing verification link:', error)
@@ -190,7 +213,7 @@ export default function EmailVerificationScreen() {
             // Email is verified, navigate to tabs immediately
             console.log('✅ Email already verified - redirecting to app')
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-            router.replace('/(tabs)')
+            void replaceAfterEmailVerified((h) => router.replace(h as any))
             return
           }
         } else {
@@ -224,7 +247,7 @@ export default function EmailVerificationScreen() {
             if (currentUser?.email_confirmed_at) {
               console.log('✅ Email already verified - redirecting to app')
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-              router.replace('/(tabs)')
+              void replaceAfterEmailVerified((h) => router.replace(h as any))
               return
             }
           } catch (error: any) {
@@ -328,7 +351,7 @@ export default function EmailVerificationScreen() {
         setResending(false)
         try { await AsyncStorage.removeItem(PENDING_EMAIL_STORAGE_KEY) } catch { /* non-blocking */ }
         showToast('Email already verified. Taking you in…', { kind: 'success' })
-        router.replace('/(tabs)')
+        void replaceAfterEmailVerified((h) => router.replace(h as any))
         return
       }
 
@@ -387,7 +410,7 @@ export default function EmailVerificationScreen() {
         if (errorMessage.includes('already verified') || errorMessage.includes('email already confirmed')) {
           try { await AsyncStorage.removeItem(PENDING_EMAIL_STORAGE_KEY) } catch { /* non-blocking */ }
           showToast('Email already verified.', { kind: 'success' })
-          router.replace('/(tabs)')
+          void replaceAfterEmailVerified((h) => router.replace(h as any))
           return
         }
         if (errorMessage.includes('email not found') || errorMessage.includes('user not found') || errorMessage.includes('invalid email')) {
@@ -425,13 +448,71 @@ export default function EmailVerificationScreen() {
     }
   }
 
+  const handleVerifyOtp = async () => {
+    Keyboard.dismiss()
+    const digits = otpCode.replace(/\D/g, '').slice(0, 8)
+    if (digits.length < 6) {
+      showToast('Enter the 6-digit code from your email.', { kind: 'warning' })
+      return
+    }
+    let emailToUse = userEmail?.trim() || ''
+    if (!emailToUse) {
+      try {
+        const stored = await AsyncStorage.getItem(PENDING_EMAIL_STORAGE_KEY)
+        if (stored?.trim()) emailToUse = stored.trim()
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!emailToUse) {
+      Alert.alert('Email needed', 'We couldn’t find your email. Go back and sign up again, or resend the verification email.')
+      return
+    }
+
+    setVerifyingOtp(true)
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+    try {
+      const types = ['signup', 'email'] as const
+      let lastError: string | null = null
+      for (const type of types) {
+        const { data, error } = await supabase.auth.verifyOtp({
+          email: emailToUse,
+          token: digits.slice(0, 6),
+          type,
+        })
+        if (!error && data?.session) {
+          try {
+            await AsyncStorage.removeItem(PENDING_EMAIL_STORAGE_KEY)
+          } catch {
+            /* non-blocking */
+          }
+          await supabase.auth.refreshSession().catch(() => {})
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+          showToast('Email verified!', { kind: 'success' })
+          void replaceAfterEmailVerified((h) => router.replace(h as any))
+          return
+        }
+        lastError = error?.message ?? null
+      }
+      showToast(lastError || 'Invalid or expired code. Request a new email.', {
+        kind: 'error',
+        durationMs: 4000,
+      })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Something went wrong.'
+      showToast(msg, { kind: 'error', durationMs: 4000 })
+    } finally {
+      setVerifyingOtp(false)
+    }
+  }
+
   const displayEmail = userEmail || 'your email'
+  const keyboardVerticalOffset = Platform.OS === 'ios' ? insets.top + 8 : 0
 
   return (
     <View style={styles.container}>
       <StatusBar style="dark" />
-      
-      {/* Background */}
+
       <LinearGradient
         colors={['#FAF8F3', '#F0F7F2', '#E8F4ED']}
         start={{ x: 0, y: 0 }}
@@ -439,87 +520,157 @@ export default function EmailVerificationScreen() {
         style={styles.gradientBackground}
       />
 
-      <View style={styles.content}>
-        <View style={styles.iconContainer}>
-          <Text style={styles.icon}>📧</Text>
-        </View>
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoid}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={keyboardVerticalOffset}
+      >
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: Math.max(insets.bottom, 24) + 120 },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+        >
+            <View style={styles.content}>
+              <View style={styles.iconContainer}>
+                <Text style={styles.icon}>📧</Text>
+              </View>
 
-        <Text style={styles.title}>Verify Your Email</Text>
-        <Text style={styles.subtitle}>
-          {userEmail ? 'We\'ve sent a verification link to' : 'Please verify your email address'}
-        </Text>
-        {userEmail && <Text style={styles.email}>{displayEmail}</Text>}
+              <Text style={styles.title}>Verify Your Email</Text>
+              <Text style={styles.subtitle}>
+                {userEmail ? 'We\'ve sent a verification link to' : 'Please verify your email address'}
+              </Text>
+              {userEmail && <Text style={styles.email}>{displayEmail}</Text>}
 
-        <Text style={styles.instructions}>
-          Please check your inbox and click the verification link to continue.
-          {'\n\n'}Don’t see it? Check your Junk/Spam (and Promotions) folder.
-        </Text>
+              <Text style={styles.instructions}>
+                Open the link in the email, or enter the 6-digit code below.
+                {'\n\n'}Don’t see it? Check your Junk/Spam (and Promotions) folder.
+              </Text>
 
-        {checking && (
-          <View style={styles.checkingContainer}>
-            <ActivityIndicator size="small" color="#6A9571" />
-            <Text style={styles.checkingText}>Checking verification status...</Text>
+              <Text style={styles.otpLabel}>Verification code</Text>
+              <TextInput
+                style={styles.otpInput}
+                value={otpCode}
+                onChangeText={(t) => setOtpCode(t.replace(/\D/g, '').slice(0, 6))}
+                keyboardType="number-pad"
+                textContentType="oneTimeCode"
+                autoComplete="one-time-code"
+                maxLength={6}
+                placeholder="000000"
+                placeholderTextColor="#B0B0B0"
+                editable={!verifyingOtp}
+                returnKeyType="done"
+                onSubmitEditing={Keyboard.dismiss}
+                inputAccessoryViewID={Platform.OS === 'ios' ? OTP_ACCESSORY_ID : undefined}
+              />
+              <Pressable
+                style={styles.dismissKeyboardLink}
+                onPress={() => Keyboard.dismiss()}
+                hitSlop={12}
+              >
+                <Text style={styles.dismissKeyboardText}>Hide keyboard</Text>
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [
+                  styles.otpSubmit,
+                  (verifyingOtp || otpCode.length < 6) && styles.otpSubmitDisabled,
+                  pressed && !verifyingOtp && otpCode.length >= 6 && styles.otpSubmitPressed,
+                ]}
+                onPress={handleVerifyOtp}
+                disabled={verifyingOtp || otpCode.length < 6}
+              >
+                {verifyingOtp ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.otpSubmitText}>Verify code</Text>
+                )}
+              </Pressable>
+
+              {checking && (
+                <View style={styles.checkingContainer}>
+                  <ActivityIndicator size="small" color="#6A9571" />
+                  <Text style={styles.checkingText}>Checking verification status...</Text>
+                </View>
+              )}
+
+              <Pressable
+                style={({ pressed }) => [
+                  styles.verifyButton,
+                  pressed && styles.verifyButtonPressed,
+                ]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+                  void openMailAppInbox()
+                }}
+              >
+                <LinearGradient
+                  colors={['#5A8A6A', '#6A9571', '#7BA67D']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.verifyButtonGradient}
+                >
+                  <Text style={styles.verifyButtonText}>Open mail app</Text>
+                </LinearGradient>
+              </Pressable>
+
+              <Pressable
+                style={({ pressed }) => [
+                  styles.resendButton,
+                  pressed && styles.resendButtonPressed,
+                  (resending || resendCooldown > 0) && styles.resendButtonDisabled,
+                ]}
+                onPress={handleResendEmail}
+                disabled={resending || resendCooldown > 0}
+              >
+                {resending ? (
+                  <ActivityIndicator size="small" color="#6A9571" />
+                ) : resendCooldown > 0 ? (
+                  <Text style={styles.resendLinkText}>Resend in {resendCooldown}s</Text>
+                ) : (
+                  <Text style={styles.resendLinkText}>Didn't receive it? Resend verification email</Text>
+                )}
+              </Pressable>
+
+              <Text style={styles.hint}>
+                After you verify, you’ll see your trial and subscription options (if enabled), then the app.
+              </Text>
+
+              {!userEmail && (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.backButton,
+                    pressed && styles.backButtonPressed,
+                  ]}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+                    router.replace('/auth')
+                  }}
+                >
+                  <Text style={styles.backButtonText}>Back</Text>
+                </Pressable>
+              )}
+            </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      {Platform.OS === 'ios' ? (
+        <InputAccessoryView nativeID={OTP_ACCESSORY_ID}>
+          <View style={styles.accessoryBar}>
+            <Pressable
+              onPress={() => Keyboard.dismiss()}
+              style={styles.accessoryDone}
+              hitSlop={16}
+            >
+              <Text style={styles.accessoryDoneText}>Done</Text>
+            </Pressable>
           </View>
-        )}
-
-        <Pressable
-          style={({ pressed }) => [
-            styles.verifyButton,
-            pressed && styles.verifyButtonPressed,
-          ]}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
-            const mailto = userEmail ? `mailto:${userEmail}` : 'mailto:'
-            Linking.openURL(mailto).catch(() => {})
-          }}
-        >
-          <LinearGradient
-            colors={['#5A8A6A', '#6A9571', '#7BA67D']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 0 }}
-            style={styles.verifyButtonGradient}
-          >
-            <Text style={styles.verifyButtonText}>Check Your Inbox</Text>
-          </LinearGradient>
-        </Pressable>
-
-        <Pressable
-          style={({ pressed }) => [
-            styles.resendButton,
-            pressed && styles.resendButtonPressed,
-            (resending || resendCooldown > 0) && styles.resendButtonDisabled,
-          ]}
-          onPress={handleResendEmail}
-          disabled={resending || resendCooldown > 0}
-        >
-          {resending ? (
-            <ActivityIndicator size="small" color="#6A9571" />
-          ) : resendCooldown > 0 ? (
-            <Text style={styles.resendLinkText}>Resend in {resendCooldown}s</Text>
-          ) : (
-            <Text style={styles.resendLinkText}>Didn't receive it? Resend verification email</Text>
-          )}
-        </Pressable>
-
-        <Text style={styles.hint}>
-          Once you verify your email, you'll automatically be taken to the app.
-        </Text>
-
-        {!userEmail && (
-          <Pressable
-            style={({ pressed }) => [
-              styles.backButton,
-              pressed && styles.backButtonPressed,
-            ]}
-            onPress={() => {
-              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
-              router.replace('/auth')
-            }}
-          >
-            <Text style={styles.backButtonText}>Back</Text>
-          </Pressable>
-        )}
-      </View>
+        </InputAccessoryView>
+      ) : null}
     </View>
   )
 }
@@ -535,24 +686,36 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
   },
-  content: {
+  keyboardAvoid: {
     flex: 1,
-    justifyContent: 'center',
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    paddingTop: 12,
+    paddingHorizontal: 24,
+  },
+  content: {
     alignItems: 'center',
-    paddingHorizontal: 32,
+    paddingVertical: 16,
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
   },
   iconContainer: {
-    marginBottom: 32,
+    marginBottom: 20,
   },
   icon: {
     fontSize: 80,
     textAlign: 'center',
   },
   title: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: '800',
     color: '#1A1A1A',
-    marginBottom: 16,
+    marginBottom: 12,
     textAlign: 'center',
     letterSpacing: -0.5,
   },
@@ -564,19 +727,95 @@ const styles = StyleSheet.create({
     fontWeight: '400',
   },
   email: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '700',
     color: '#6A9571',
     textAlign: 'center',
-    marginBottom: 32,
+    marginBottom: 20,
   },
   instructions: {
     fontSize: 16,
     color: '#666666',
     textAlign: 'center',
     lineHeight: 24,
-    marginBottom: 32,
+    marginBottom: 20,
     paddingHorizontal: 20,
+  },
+  otpLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#444444',
+    alignSelf: 'flex-start',
+    width: '100%',
+    maxWidth: 280,
+    marginBottom: 8,
+  },
+  otpInput: {
+    width: '100%',
+    maxWidth: 280,
+    fontSize: 24,
+    fontWeight: '700',
+    letterSpacing: 6,
+    textAlign: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#6A9571',
+    backgroundColor: '#FFFFFF',
+    color: '#1A1A1A',
+    marginBottom: 6,
+  },
+  dismissKeyboardLink: {
+    alignSelf: 'center',
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  dismissKeyboardText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#6A9571',
+  },
+  accessoryBar: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#E8E8EA',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#C6C6C8',
+  },
+  accessoryDone: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  accessoryDoneText: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#007AFF',
+  },
+  otpSubmit: {
+    width: '100%',
+    maxWidth: 280,
+    backgroundColor: '#4A7558',
+    paddingVertical: 16,
+    minHeight: 52,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  otpSubmitDisabled: {
+    opacity: 0.45,
+  },
+  otpSubmitPressed: {
+    opacity: 0.9,
+  },
+  otpSubmitText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   checkingContainer: {
     flexDirection: 'row',
@@ -632,11 +871,13 @@ const styles = StyleSheet.create({
     color: '#6A9571',
   },
   hint: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#8E8E93',
     textAlign: 'center',
     fontStyle: 'italic',
-    paddingHorizontal: 20,
+    paddingHorizontal: 12,
+    lineHeight: 18,
+    marginTop: 4,
   },
   backButton: {
     marginTop: 24,

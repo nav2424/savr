@@ -1,11 +1,36 @@
 # App Store Review Reply Template
 
-**Submission ID:** 633f41ce-9966-4ad5-86b6-664325d7798e  
 **Use this to reply in App Store Connect → Resolution Center**
 
 ---
 
-## Summary of Fixes
+## Guideline 2.1(a) – March 2026: “View Plans” + verification email
+
+**Submission ID (example):** `50470f93-2832-4bc0-9231-5061c3871647`
+
+### View Plans / subscription UI
+
+We addressed cases where the subscription flow could appear unresponsive:
+
+- Ensured RevenueCat initializes before loading offerings; **25s timeout** on offerings fetch so the UI does not wait indefinitely on poor networks.
+- **Loading indicators** on “View Plans” and “Change plan” while the store sheet is preparing.
+- **Alerts** if the paywall cannot be presented or loading fails, with actionable copy.
+- Corrected entitlement identifier to **`pro`** (must match RevenueCat exactly) so purchases unlock reliably after review testing.
+
+Please test **View Plans** on a **production/TestFlight build** with a valid network; the reviewer device must use a **Sandbox** Apple ID for purchases (Settings → App Store → Sandbox Account).
+
+### Verification email
+
+Verification messages are sent by **Supabase Auth**. If no email arrives:
+
+1. Configure **SMTP** (or a supported auth email provider) in the Supabase project so signup confirmation can be delivered.
+2. Ask reviewers to check **Spam/Junk** and use **Resend verification** on the in-app email verification screen.
+
+The app now shows a **blocking alert** after sign-up explaining inbox/spam and resend, so the expected flow is explicit.
+
+---
+
+## Summary of Fixes (earlier template)
 
 | Issue | Status | Action |
 |-------|--------|--------|

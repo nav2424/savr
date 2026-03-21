@@ -67,6 +67,10 @@ export function capitalizeCategoryName(category: string): string {
     'snacks, sweets & desserts': 'Snacks, Sweets & Desserts',
     'snacks & sweets': 'Snacks, Sweets & Desserts',
     'beverages': 'Beverages',
+    'frozen': 'Frozen',
+    'household & cleaning': 'Household & Cleaning',
+    'household and cleaning': 'Household & Cleaning',
+    'cleaning': 'Household & Cleaning',
     'non-food / misc': 'Non-Food / Misc',
     'non food / misc': 'Non-Food / Misc'
   }
@@ -1565,11 +1569,12 @@ CRITICAL: The sum of all item prices must equal approximately $${expectedTotal.t
           category = 'Meat, Poultry & Seafood'
         }
         
-        // Use detectCategoryFromName as final authority for meat items
+        // Use detectCategoryFromName as final authority for meat, frozen, and cleaning
         const detectedCategory = detectCategoryFromName(expandedName)
-        if (detectedCategory === 'Meat, Poultry & Seafood' && category !== 'Meat, Poultry & Seafood') {
-          console.log(`🔧 Re-classifying "${expandedName}" from "${category}" to "Meat, Poultry & Seafood" (detected)`)
-          category = 'Meat, Poultry & Seafood'
+        const overrideCategories = ['Meat, Poultry & Seafood', 'Frozen', 'Household & Cleaning']
+        if (overrideCategories.includes(detectedCategory) && category !== detectedCategory) {
+          console.log(`🔧 Re-classifying "${expandedName}" from "${category}" to "${detectedCategory}" (detected)`)
+          category = detectedCategory
         }
         
         const normalizedCategory = normalizeCategory(category || detectedCategory || 'Other')
@@ -1920,11 +1925,12 @@ Rules:
           category = 'Meat, Poultry & Seafood'
         }
         
-        // Use detectCategoryFromName as final authority for meat items
+        // Use detectCategoryFromName as final authority for meat, frozen, and cleaning
         const detectedCategory = detectCategoryFromName(expandedName)
-        if (detectedCategory === 'Meat, Poultry & Seafood' && category !== 'Meat, Poultry & Seafood') {
-          console.log(`🔧 Re-classifying "${expandedName}" from "${category}" to "Meat, Poultry & Seafood" (detected)`)
-          category = 'Meat, Poultry & Seafood'
+        const overrideCategories = ['Meat, Poultry & Seafood', 'Frozen', 'Household & Cleaning']
+        if (overrideCategories.includes(detectedCategory) && category !== detectedCategory) {
+          console.log(`🔧 Re-classifying "${expandedName}" from "${category}" to "${detectedCategory}" (detected)`)
+          category = detectedCategory
         }
         
         const normalizedCategory = normalizeCategory(category || detectedCategory || 'Other')
@@ -2043,13 +2049,14 @@ Extract ALL items - do not stop after finding a few.`
               category = 'Meat, Poultry & Seafood'
             }
             
-            // Use detectCategoryFromName as final authority for meat items
+            // Use detectCategoryFromName as final authority for meat, frozen, and cleaning
             const detectedCategory = detectCategoryFromName(expandedName)
-            if (detectedCategory === 'Meat, Poultry & Seafood' && category !== 'Meat, Poultry & Seafood') {
-              console.log(`🔧 Re-classifying "${expandedName}" from "${category}" to "Meat, Poultry & Seafood" (detected)`)
-              category = 'Meat, Poultry & Seafood'
+            const overrideCategories = ['Meat, Poultry & Seafood', 'Frozen', 'Household & Cleaning']
+            if (overrideCategories.includes(detectedCategory) && category !== detectedCategory) {
+              console.log(`🔧 Re-classifying "${expandedName}" from "${category}" to "${detectedCategory}" (detected)`)
+              category = detectedCategory
             }
-            
+
             const normalizedCategory = normalizeCategory(category || detectedCategory || 'Other')
             const properEmoji = getItemEmoji(expandedName, normalizedCategory)
             let price = item.price
@@ -2272,11 +2279,12 @@ STRICT CATEGORY RULES:
           category = 'Meat, Poultry & Seafood'
         }
         
-        // Use detectCategoryFromName as final authority for meat items
+        // Use detectCategoryFromName as final authority for meat, frozen, and cleaning
         const detectedCategory = detectCategoryFromName(expandedName)
-        if (detectedCategory === 'Meat, Poultry & Seafood' && category !== 'Meat, Poultry & Seafood') {
-          console.log(`🔧 Re-classifying "${expandedName}" from "${category}" to "Meat, Poultry & Seafood" (detected)`)
-          category = 'Meat, Poultry & Seafood'
+        const overrideCategories = ['Meat, Poultry & Seafood', 'Frozen', 'Household & Cleaning']
+        if (overrideCategories.includes(detectedCategory) && category !== detectedCategory) {
+          console.log(`🔧 Re-classifying "${expandedName}" from "${category}" to "${detectedCategory}" (detected)`)
+          category = detectedCategory
         }
         
         const normalizedCategory = normalizeCategory(category || detectedCategory || 'Other')
@@ -3014,13 +3022,14 @@ If you can't identify the item clearly, return null.`
         category = 'Meat, Poultry & Seafood'
       }
       
-      // Use detectCategoryFromName as final authority for meat items
+      // Use detectCategoryFromName as final authority for meat, frozen, and cleaning
       const detectedCategory = detectCategoryFromName(result.name)
-      if (detectedCategory === 'Meat, Poultry & Seafood' && category !== 'Meat, Poultry & Seafood') {
-        console.log(`🔧 Re-classifying "${result.name}" from "${category}" to "Meat, Poultry & Seafood" (detected)`)
-        category = 'Meat, Poultry & Seafood'
+      const overrideCategories = ['Meat, Poultry & Seafood', 'Frozen', 'Household & Cleaning']
+      if (overrideCategories.includes(detectedCategory) && category !== detectedCategory) {
+        console.log(`🔧 Re-classifying "${result.name}" from "${category}" to "${detectedCategory}" (detected)`)
+        category = detectedCategory
       }
-      
+
       // Normalize category and ensure proper emoji using unified formatter
       const normalizedCategory = normalizeCategory(category || detectedCategory || 'Other')
       const properEmoji = getItemEmoji(result.name, normalizedCategory)

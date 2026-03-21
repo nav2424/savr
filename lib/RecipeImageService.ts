@@ -454,31 +454,12 @@ export class RecipeImageService {
       // Try expoConfig first (newer Expo SDK)
       if (Constants?.expoConfig?.extra) {
         apiKey = Constants.expoConfig.extra.EXPO_PUBLIC_UNSPLASH_ACCESS_KEY || Constants.expoConfig.extra.UNSPLASH_ACCESS_KEY
-        if (apiKey) {
-          keySource = 'Constants.expoConfig.extra'
-          console.log(`✅ Found Unsplash API key in Constants.expoConfig.extra`)
-        }
+        if (apiKey) keySource = 'Constants.expoConfig.extra'
       }
       
-      // Fallback to manifest (older Expo SDK)
       if (!apiKey && Constants?.manifest?.extra) {
         apiKey = Constants.manifest.extra.EXPO_PUBLIC_UNSPLASH_ACCESS_KEY || Constants.manifest.extra.UNSPLASH_ACCESS_KEY
-        if (apiKey) {
-          keySource = 'Constants.manifest.extra'
-          console.log(`✅ Found Unsplash API key in Constants.manifest.extra`)
-        }
-      }
-      
-      // Debug: Log what's available if key not found
-      if (!apiKey) {
-        console.log(`🔍 Debug - Constants.expoConfig?.extra:`, Constants?.expoConfig?.extra ? 'exists' : 'missing')
-        console.log(`🔍 Debug - Constants.manifest?.extra:`, Constants?.manifest?.extra ? 'exists' : 'missing')
-        if (Constants?.expoConfig?.extra) {
-          console.log(`🔍 Debug - Available keys in expoConfig.extra:`, Object.keys(Constants.expoConfig.extra))
-        }
-        if (Constants?.manifest?.extra) {
-          console.log(`🔍 Debug - Available keys in manifest.extra:`, Object.keys(Constants.manifest.extra))
-        }
+        if (apiKey) keySource = 'Constants.manifest.extra'
       }
     } catch (e) {
       console.warn(`⚠️ Error accessing Expo Constants:`, e)
@@ -488,21 +469,15 @@ export class RecipeImageService {
     // Fallback to environment variables (for Node.js/server environments or if Constants failed)
     if (!apiKey) {
       apiKey = process.env.EXPO_PUBLIC_UNSPLASH_ACCESS_KEY || process.env.UNSPLASH_ACCESS_KEY
-      if (apiKey) {
-        keySource = 'process.env'
-        console.log(`✅ Found Unsplash API key in process.env`)
-      }
+      if (apiKey) keySource = 'process.env'
     }
     
     if (!apiKey) {
-      console.warn(`⚠️ Unsplash API key not found. Using Unsplash Source API fallback for query: "${query}"`)
-      console.warn(`   Checked: Constants.expoConfig.extra, Constants.manifest.extra, EXPO_PUBLIC_UNSPLASH_ACCESS_KEY, UNSPLASH_ACCESS_KEY`)
-      console.warn(`   💡 TIP: Make sure UNSPLASH_ACCESS_KEY is in .env and restart with: npx expo start -c`)
-      // Fallback to Unsplash Source API (no auth required, but limited)
+      if (__DEV__) {
+        console.warn(`⚠️ Unsplash API key not found. Using fallback for query: "${query}"`)
+      }
       return this.getUnsplashSourceFallback(query, count)
     }
-    
-    console.log(`✅ Using Unsplash API key from ${keySource} (length: ${apiKey.length}, starts with: ${apiKey.substring(0, 8)}...)`)
 
     try {
       // Use different ordering for variety: 'relevant', 'latest', 'popular'
@@ -525,8 +500,6 @@ export class RecipeImageService {
 
       const data = await response.json()
       const results = Array.isArray(data?.results) ? data.results : []
-
-      console.log(`📊 Unsplash API returned ${results.length} results for query: "${query}" (page ${page})`)
 
       if (results.length === 0) {
         console.warn(`⚠️ Unsplash API returned 0 results for query: "${query}", trying fallback`)
@@ -767,7 +740,7 @@ export class RecipeImageService {
     }
     
     if (!apiKey) {
-      console.warn(`⚠️ Pexels API key not found. Skipping Pexels for query: "${query}"`)
+      if (__DEV__) console.warn(`⚠️ Pexels API key not found. Skipping Pexels for query: "${query}"`)
       return []
     }
 

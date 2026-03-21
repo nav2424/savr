@@ -1,0 +1,31 @@
+# EAS uploads only what’s needed; the build server runs npm/pods. Smaller tarball = less local disk during compress.
+# See: https://docs.expo.dev/build-reference/easignore/
+
+# Dependencies (installed on EAS)
+node_modules/
+
+# iOS — Pods are reinstalled from Podfile / Podfile.lock
+ios/Pods/
+ios/build/
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+ios/DerivedData/
+
+# Android — Gradle caches / outputs
+android/.gradle/
+android/build/
+android/app/build/
+android/**/intermediates/
+
+# Expo / web / tooling caches
+.expo/
+dist/
+web-build/
+coverage/
+.turbo/
+.next/
+
+# Logs & editor
+*.log
+**/.DS_Store
+.cursor/

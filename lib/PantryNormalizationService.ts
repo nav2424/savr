@@ -64,7 +64,12 @@ const COARSE_CATEGORY: Record<string, string> = {
   'sauce marinara': 'Condiments & Sauces',
   'maple syrup': 'Pantry Staples',
   'soy sauce': 'Condiments & Sauces',
-  'kirkland signature parchment paper': 'Household'
+  'kirkland signature parchment paper': 'Household',
+  'parchment paper': 'Household',
+  'aluminium foil': 'Household',
+  'aluminum foil': 'Household',
+  'garbage bags': 'Household',
+  'trash bags': 'Household',
 }
 
 /**

@@ -5,7 +5,18 @@
 export function categorizeForShopping(itemName: string): string {
   const name = itemName.toLowerCase().trim()
   
-  // CRITICAL: Check meat/seafood FIRST before beverages (to avoid "steak" matching "tea" or other patterns)
+  // CRITICAL: Check Frozen FIRST - before Meat, Produce, etc.
+  // "frozen chicken", "frozen pizza", "frozen vegetables" must go to Frozen, not Meat/Produce
+  if (name.match(/\b(frozen|ice cream|frozen vegetables|frozen fruit|frozen berries|frozen meal|frozen dinner|frozen pizza|pizza|pizzas|frozen nuggets|frozen fries|frozen waffles|frozen pancakes|popsicle|popsicles|ice pop|ice pops|frozen entree|frozen entrees|frozen breakfast|frozen lunch|frozen snack|frozen appetizer|frozen chicken|frozen beef|frozen fish|frozen salmon|frozen shrimp|frozen broccoli|frozen peas|frozen corn|frozen mixed vegetables|frozen berries)\b/i)) {
+    return 'Frozen'
+  }
+  
+  // Household & Cleaning - before food categories
+  // Includes: cleaning products (vim, javel, bleach), bags (garbage, trash), paper goods (parchment, foil)
+  if (name.match(/\b(detergent|bleach|cleaner|cleaning spray|all-purpose cleaner|glass cleaner|disinfectant|dish soap|laundry soap|fabric softener|dryer sheet|sponge|scrubber|mop|broom|trash bag|trash bags|garbage bag|garbage bags|paper towel|paper towels|napkin|napkins|aluminum foil|aluminium foil|aluminium paper|tin foil|plastic wrap|cling wrap|ziploc|storage bag|storage bags|parchment paper|parchment|baking paper|wax paper|vim|javel|scouring pad|scouring powder|toilet cleaner|drain cleaner|window cleaner)\b/i)) {
+    return 'Household & Cleaning'
+  }
+  
   // Meat, Poultry & Seafood - Must be very specific to avoid false matches
   if (name.match(/\b(chicken|beef|pork|fish|salmon|tuna|shrimp|turkey|steak|steaks|bacon|sausage|sausages|ham|lamb|crab|crabs|lobster|lobsters|meat|poultry|seafood|ground beef|ground pork|ground turkey|chicken breast|chicken thigh|chicken wing|chicken wings|ribs|ribeye|sirloin|filet|tenderloin|pork chop|pork chops|brisket|roast|turkey breast|turkey leg|duck|goose|venison|bison|veal|anchovy|anchovies|sardine|sardines|mackerel|cod|halibut|tilapia|trout|scallop|scallops|mussel|mussels|clam|clams|oyster|oysters|octopus|squid|calamari)\b/i)) {
     return 'Meat, Poultry & Seafood'
@@ -83,11 +94,6 @@ export function categorizeForShopping(itemName: string): string {
     return 'Beverages'
   }
   
-  // Frozen - Check BEFORE produce to catch "pizza with peppers" correctly
-  if (name.match(/\b(frozen|ice cream|frozen vegetables|frozen fruit|frozen berries|frozen meal|frozen dinner|frozen pizza|pizza|pizzas|frozen nuggets|frozen fries|frozen waffles|frozen pancakes|popsicle|popsicles|ice pop|ice pops|frozen entree|frozen entrees|frozen breakfast|frozen lunch|frozen snack|frozen appetizer)\b/i)) {
-    return 'Frozen'
-  }
-  
   // Default - use standard category name
   return 'Non-Food / Misc'
 }
@@ -106,6 +112,7 @@ export function recategorizeItem(itemName: string, currentCategory: string): str
     'Snacks, Sweets & Desserts',
     'Beverages',
     'Frozen',
+    'Household & Cleaning',
     'Non-Food / Misc'
   ]
   

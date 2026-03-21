@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
+import { safeJsonParse } from './safeUtils'
 
 // Data persistence keys
 const STORAGE_KEYS = {
@@ -626,7 +627,10 @@ class DataManager {
 
   async importData(jsonData: string): Promise<void> {
     try {
-      const data = JSON.parse(jsonData)
+      const data = safeJsonParse<Record<string, unknown>>(jsonData, null)
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid data format')
+      }
       
       if (data.lists) await this.saveGroceryLists(data.lists)
       if (data.pantry) await this.savePantryItems(data.pantry)

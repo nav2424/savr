@@ -1,218 +1,197 @@
 /**
- * Subscription Gate - Protects App Access
+ * Subscription Gate — paywall after free trial unless user has `pro`.
  *
- * To enable paywall: set EXPO_PUBLIC_ENABLE_PAYWALL=true (EAS secrets or .env).
- * app/_layout.tsx wraps content in SubscriptionGate when config.enablePaywall is true.
+ * Enable with EXPO_PUBLIC_ENABLE_PAYWALL=true. See app/_layout.tsx.
  *
- * Shows paywall if user is not subscribed.
- * Allows access during 3-day trial and after subscription.
+ * Access (after loading): RevenueCat `pro` OR family premium OR grandfathered OR within FREE_TRIAL_DAYS of auth signup.
+ * Missing created_at or auth errors → fail closed (no free trial).
  *
- * NOTE: In development/Expo Go, paywall is DISABLED for existing users;
- * only new signups (created in last 5 minutes) see the paywall.
+ * Gating waits for: initial subscription bootstrap (not foreground store refresh) and trial check.
  */
 
-import React, { useEffect, useState } from 'react';
-import { useRouter, useSegments } from 'expo-router';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
+import {
+  useRouter,
+  useSegments,
+  usePathname,
+} from 'expo-router';
+import {
+  View,
+  ActivityIndicator,
+  StyleSheet,
+  Platform,
+} from 'react-native';
 import { useAuth } from '../lib/AuthContext';
 import { useSubscription } from '../lib/SubscriptionContext';
-import { View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
-import {
-  showHostedPaywall,
-  isPro,
-  getCurrentOfferingOrThrow,
-  logPaywallDiagnostics,
-} from '../lib/revenuecat';
-import { PAYWALL_RESULT } from 'react-native-purchases-ui';
 import { supabase } from '../lib/supabase';
+import { APP_FREE_TRIAL_DAYS } from '../lib/freeTrial';
 
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+const FREE_TRIAL_MS = APP_FREE_TRIAL_DAYS * 24 * 60 * 60 * 1000;
+
+/** Route segment names that never require subscription (expo-router file routes). */
+const PUBLIC_SEGMENTS = new Set([
+  'welcome',
+  'auth',
+  'onboarding',
+  'paywall',
+  'email-verification',
+  'password-reset',
+  'email-verified',
+  'join-family',
+  'manage-family',
+]);
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 interface SubscriptionGateProps {
   children: React.ReactNode;
 }
 
+function isPublicSegmentPath(segments: string[]): boolean {
+  return segments.some((seg) => PUBLIC_SEGMENTS.has(seg));
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 export const SubscriptionGate: React.FC<SubscriptionGateProps> = ({ children }) => {
   const { user } = useAuth();
-  const { isSubscribed, isLoading, getSubscriptionStatus } = useSubscription();
+  const {
+    hasPremiumAccess,
+    isLoading: subscriptionBootstrapping,
+  } = useSubscription();
   const segments = useSegments();
+  const pathname = usePathname();
   const router = useRouter();
-  const [isNewUser, setIsNewUser] = useState<boolean | null>(null);
-  const [checkingNewUser, setCheckingNewUser] = useState(true);
-  const [showingPaywall, setShowingPaywall] = useState(false);
 
-  // Check if user is newly created (within last 5 minutes)
+  const [isWithinFreeTrial, setIsWithinFreeTrial] = useState<boolean | null>(null);
+  const [trialEndsAt, setTrialEndsAt] = useState<Date | null>(null);
+  const [checkingTrial, setCheckingTrial] = useState(true);
+
+  // Before paint: avoid one frame where user exists but trial is still "resolved" from the logged-out pass.
+  useLayoutEffect(() => {
+    if (!user) {
+      setCheckingTrial(false);
+      setIsWithinFreeTrial(false);
+      setTrialEndsAt(null);
+      return;
+    }
+    setCheckingTrial(true);
+  }, [user]);
+
+  // Trial window from Supabase auth created_at
   useEffect(() => {
-    const checkIfNewUser = async () => {
+    const checkTrialStatus = async () => {
+      setCheckingTrial(true);
+
       if (!user) {
-        setCheckingNewUser(false);
+        setIsWithinFreeTrial(false);
+        setTrialEndsAt(null);
+        setCheckingTrial(false);
         return;
       }
 
       try {
-        // Get user's auth metadata
-        const { data: authData, error: authError } = await supabase.auth.getUser();
-        
-        // Handle refresh token errors gracefully
-        if (authError) {
-          if (authError.message?.includes('Refresh Token') || authError.message?.includes('refresh_token')) {
-            // Invalid refresh token - assume existing user (don't block access)
-            setIsNewUser(false);
-            setCheckingNewUser(false);
+        const { data: authData, error } = await supabase.auth.getUser();
+
+        if (error) {
+          if (
+            error.message?.includes('Refresh Token') ||
+            error.message?.includes('refresh_token')
+          ) {
+            setIsWithinFreeTrial(false);
+            setTrialEndsAt(null);
+            setCheckingTrial(false);
             return;
           }
-          // Other auth errors - assume existing user
-          setIsNewUser(false);
-          setCheckingNewUser(false);
+        }
+
+        if (error || !authData?.user?.created_at) {
+          if (__DEV__) {
+            console.warn(
+              '[SubscriptionGate] Could not retrieve created_at — treating trial as expired.'
+            );
+          }
+          setIsWithinFreeTrial(false);
+          setTrialEndsAt(null);
+          setCheckingTrial(false);
           return;
         }
-        
-        if (authData.user?.created_at) {
-          const createdAt = new Date(authData.user.created_at);
-          const now = new Date();
-          const minutesSinceCreation = (now.getTime() - createdAt.getTime()) / (1000 * 60);
-          
-          // Consider "new" if created within last 5 minutes
-          setIsNewUser(minutesSinceCreation < 5);
-          
-          if (__DEV__) {
-            console.log(`User created ${minutesSinceCreation.toFixed(1)} minutes ago - ${minutesSinceCreation < 5 ? 'NEW' : 'EXISTING'} user`);
-          }
-        }
-      } catch (error) {
-        console.error('Error checking user creation time:', error);
-        // On error, assume existing user (don't block access)
-        setIsNewUser(false);
+
+        const createdAt = new Date(authData.user.created_at);
+        const trialEnd = new Date(createdAt.getTime() + FREE_TRIAL_MS);
+        const now = new Date();
+        const withinTrial = now < trialEnd;
+
+        setTrialEndsAt(trialEnd);
+        setIsWithinFreeTrial(withinTrial);
+      } catch (err) {
+        console.error('[SubscriptionGate] Trial check failed:', err);
+        setIsWithinFreeTrial(false);
+        setTrialEndsAt(null);
       } finally {
-        setCheckingNewUser(false);
+        setCheckingTrial(false);
       }
     };
 
-    checkIfNewUser();
+    checkTrialStatus();
   }, [user]);
 
+  // Do not block on isPremiumAccessSyncing — foreground store refresh would freeze the UI on every resume.
+  const isLoading = subscriptionBootstrapping || checkingTrial;
+
+  const hasAccess = hasPremiumAccess || isWithinFreeTrial === true;
+  const shouldShowPaywall = Boolean(user) && !isLoading && !hasAccess;
+
   useEffect(() => {
-    if (isLoading || checkingNewUser) return;
+    if (isLoading) return;
 
-    // Allow these routes without subscription
-    const publicRoutes = ['welcome', 'auth', 'onboarding', 'paywall', 'email-verification', 'password-reset'];
-    const currentRoute = segments[segments.length - 1] as string;
-    const isPublicRoute = publicRoutes.includes(currentRoute);
+    const segmentPublic = isPublicSegmentPath(segments as string[]);
+    const pathPublic =
+      pathname === '/paywall' ||
+      (typeof pathname === 'string' && pathname.startsWith('/paywall'));
+    const isPublicRoute = segmentPublic || pathPublic;
 
-    // If user is signed in
-    if (user) {
-      // Check if subscribed OR if user is existing (not new)
-      const shouldShowPaywall = !isSubscribed && isNewUser !== false;
-      
-      if (shouldShowPaywall && !isPublicRoute) {
-        // Not subscribed AND is a new user - present hosted paywall (handled in render below)
-      }
-    } else {
-      // Not signed in - send to welcome
+    if (!user) {
       if (!isPublicRoute) {
         router.replace('/welcome');
       }
+      return;
     }
-  }, [user, isSubscribed, isLoading, segments, isNewUser, checkingNewUser]);
 
-  // Show loading while checking subscription and user status
-  if (isLoading || checkingNewUser) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#6A9571" />
-      </View>
-    );
-  }
+    if (shouldShowPaywall && !isPublicRoute) {
+      router.replace({
+        pathname: '/paywall',
+        params: {
+          trialEndsAt: trialEndsAt ? trialEndsAt.toISOString() : '',
+        },
+      });
+    }
+  }, [user, shouldShowPaywall, isLoading, segments, pathname, router, trialEndsAt]);
 
-  // Block access and show Upgrade button for unsubscribed new users
-  const shouldShowPaywall = user && !isSubscribed && isNewUser !== false;
-  const currentRoute = segments[segments.length - 1] as string;
-  const isPublicRoute = ['welcome', 'auth', 'onboarding', 'paywall', 'email-verification', 'password-reset'].includes(currentRoute);
-
-  if (shouldShowPaywall && !isPublicRoute) {
-    const handleUpgrade = async () => {
-      setShowingPaywall(true);
-      try {
-        const offering = await getCurrentOfferingOrThrow();
-        const isProBefore = await isPro();
-        logPaywallDiagnostics(offering, isProBefore);
-
-        const result = await showHostedPaywall();
-
-        const isProAfter = await isPro();
-        if (__DEV__) logPaywallDiagnostics(offering, isProAfter);
-
-        if (result === PAYWALL_RESULT.PURCHASED || result === PAYWALL_RESULT.RESTORED) {
-          await getSubscriptionStatus();
-        }
-      } catch (err) {
-        if (__DEV__) console.warn('[RevenueCat] handleUpgrade failed:', err);
-      } finally {
-        setShowingPaywall(false);
-      }
-    };
-
-    return (
-      <LinearGradient colors={['#6A9571', '#4A7558']} style={styles.paywallBlock}>
-        <View style={styles.paywallBlockContent}>
-          <Text style={styles.paywallBlockTitle}>SAVR Premium</Text>
-          <Text style={styles.paywallBlockSubtitle}>Subscribe to unlock all features</Text>
-          <TouchableOpacity
-            style={styles.paywallBlockButton}
-            onPress={handleUpgrade}
-            disabled={showingPaywall}
-          >
-            {showingPaywall ? (
-              <ActivityIndicator color="#6A9571" />
-            ) : (
-              <Text style={styles.paywallBlockButtonText}>Upgrade</Text>
-            )}
-          </TouchableOpacity>
+  return (
+    <View style={styles.gateRoot}>
+      {children}
+      {isLoading ? (
+        <View style={styles.loadingOverlay} pointerEvents="auto">
+          <ActivityIndicator size="large" color="#6A9571" />
         </View>
-      </LinearGradient>
-    );
-  }
-
-  return <>{children}</>;
+      ) : null}
+    </View>
+  );
 };
 
 const styles = StyleSheet.create({
-  loadingContainer: {
-    flex: 1,
+  gateRoot: { flex: 1 },
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-  },
-  paywallBlock: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  paywallBlockContent: {
-    alignItems: 'center',
-    padding: 40,
-  },
-  paywallBlockTitle: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    marginBottom: 8,
-  },
-  paywallBlockSubtitle: {
-    fontSize: 16,
-    color: 'rgba(255,255,255,0.9)',
-    marginBottom: 32,
-  },
-  paywallBlockButton: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 48,
-    paddingVertical: 16,
-    borderRadius: 12,
-    minWidth: 160,
-    alignItems: 'center',
-  },
-  paywallBlockButtonText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#6A9571',
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    ...(Platform.OS === 'web' ? { zIndex: 9999 } : {}),
   },
 });
-

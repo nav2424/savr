@@ -24,6 +24,11 @@ export interface ParsedOcrReceipt {
 const MONEY_REGEX = /\d+\.\d{2}/g
 const WEIGHT_REGEX = /(\d+(?:\.\d+)?)\s*(lb|lbs|kg|oz)\b/i
 
+/** Normalize decimal separator: 9,99 -> 9.99 for parsing */
+function normalizeDecimalInLine(line: string): string {
+  return line.replace(/(\d+),(\d{2})\b/g, '$1.$2')
+}
+
 /**
  * Normalize OCR text to fix common recognition errors
  * - Uppercases text
@@ -117,9 +122,10 @@ export function parseTotalsFromText(text: string): {
   // Tax rate fallback: 3-decimal number between 0-20 (e.g., 10.000)
   const TAX_RATE_FALLBACK_REGEX = /^\d{1,2}\.\d{3}$/
   
-  // Helper: Find first money value in a line
+  // Helper: Find first money value in a line (supports comma decimal: 160,79)
   function findMoneyValue(line: string): number | null {
-    const matches = line.match(MONEY_REGEX)
+    const normalized = normalizeDecimalInLine(line)
+    const matches = normalized.match(MONEY_REGEX)
     if (!matches || matches.length === 0) return null
     const value = parseFloat(matches[0]) // Use first match
     return (!isNaN(value) && value > 0 && value < 100000) ? value : null
@@ -362,7 +368,7 @@ export function parseWeightLinePair(
     return null // Invalid weight
   }
   
-  let unit = weightMatch[2].toLowerCase()
+  let unit = (weightMatch[2] || 'lb').toLowerCase()
   if (unit === 'lbs') unit = 'lb'
   
   // Extract unit price: look for @ X.XX or X.XX/LB pattern
@@ -696,7 +702,15 @@ function isNonItemLine(line: string): boolean {
     normalized.includes('cartwheel') ||
     /^saved\s*\$?\s*(\d|$)/i.test(normalized) ||
     normalized.includes('rebate') ||
-    /^(coupon|discount|reward)\b/i.test(normalized)
+    /^(coupon|discount|reward)\b/i.test(normalized) ||
+    // Fees – Quebec/Canada: ECOFRAIS (eco-fee), CONSIGNE QC (deposit), ECOTAX, DEPOSIT
+    normalized.includes('ecofrais') ||
+    normalized.includes('consigne') ||
+    normalized.includes('ecotax') ||
+    normalized.includes('deposit') ||
+    normalized.includes('depot') ||
+    /^.*\*?\s*ecofrais\b/i.test(trimmed) ||
+    /\bconsigne\s*qc\b/i.test(trimmed)
   )
 }
 
@@ -845,38 +859,95 @@ export function parseReceiptOcrText(text: string): ParsedOcrReceipt {
     return /^\d{6,}/.test(trimmed) || /^\d+\s*[FTX]$/.test(trimmed)
   }
   
-  // Helper: Check if line is a price line
+  // Helper: Check if line is a price line (supports comma decimal: 9,99)
   function isPriceLine(line: string): boolean {
-    const trimmed = line.trim()
-    // Contains money value and optionally ends with T/F/X
-    return MONEY_REGEX.test(trimmed) && !/[A-Za-z]{3,}/.test(trimmed)
+    const normalized = normalizeDecimalInLine(line.trim())
+    // Contains money value and optionally ends with T/F/X; no 3+ letter words (product names)
+    return MONEY_REGEX.test(normalized) && !/[A-Za-z]{3,}/.test(line)
   }
   
-  // Helper: Extract money value from line
+  // Helper: Extract money value from line (supports comma decimal: 9,99)
   function extractMoney(line: string): number | null {
-    const matches = line.match(MONEY_REGEX)
+    const normalized = normalizeDecimalInLine(line)
+    const matches = normalized.match(MONEY_REGEX)
     if (!matches || matches.length === 0) return null
-    const value = parseFloat(matches[0]) // Use first match
+    const value = parseFloat(matches[0])
     return (!isNaN(value) && value > 0 && value <= 10000) ? value : null
   }
 
   // Helper: Extract price from line, excluding values that are clearly WEIGHTS (e.g. "2.52 lbs").
-  // Use this for item lines so we never use weight as price.
+  // Supports comma decimal (9,99). Use for item lines so we never use weight as price.
   function extractPriceExcludingWeight(line: string): number | null {
+    const normalized = normalizeDecimalInLine(line)
     const weightUnitSuffix = /\s*(?:lb|lbs|kg|oz)\b/i
     const moneyRe = /\d+\.\d{2}/g
     const candidates: number[] = []
     let m: RegExpExecArray | null
-    while ((m = moneyRe.exec(line)) !== null) {
+    while ((m = moneyRe.exec(normalized)) !== null) {
       const value = parseFloat(m[0])
       if (isNaN(value) || value <= 0 || value > 10000) continue
-      const after = line.slice(m.index + m[0].length)
+      const after = normalized.slice(m.index + m[0].length)
       if (weightUnitSuffix.test(after)) continue // This is a weight, not a price
       candidates.push(value)
     }
     if (candidates.length === 0) return null
-    // Use rightmost non-weight value (price/line total is usually on the right)
     return candidates[candidates.length - 1]
+  }
+
+  // Helper: Parse Costco-style "N @ X.XX" or "N @ X,XX" line – returns { quantity, unitPrice, lineTotal } or null
+  // Supports: "12 @ 9,99", "12 @ 9,99  119,88", "  2 @ 3.99" (leading spaces)
+  function parseCostcoQtyAtLine(line: string): { quantity: number; unitPrice: number; lineTotal?: number } | null {
+    const normalized = normalizeDecimalInLine(line.trim())
+    const match = normalized.match(/(?:^|\s)(\d+)\s*@\s*([\d.]+)(?:\s+([\d.]+))?/)
+    if (!match) return null
+    const quantity = parseInt(match[1], 10)
+    const unitPrice = parseFloat(match[2])
+    const lineTotal = match[3] ? parseFloat(match[3]) : undefined
+    if (isNaN(quantity) || quantity < 1 || quantity > 1000 || isNaN(unitPrice) || unitPrice <= 0) return null
+    return { quantity, unitPrice, lineTotal }
+  }
+
+  // Helper: Extract quantity from any line using multiple patterns (used when Costco parse doesn't apply)
+  function extractQuantityFromLines(...lines: (string | undefined)[]): number {
+    const combined = lines.filter(Boolean).join(' ')
+    const normalized = normalizeDecimalInLine(combined)
+    // Pattern 1: "12 @ 9.99" or "12 @ 9,99" – quantity before @
+    const atMatch = normalized.match(/(?:^|\s)(\d+)\s*@\s*[\d.]+/)
+    if (atMatch) {
+      const q = parseInt(atMatch[1], 10)
+      if (q >= 1 && q <= 1000) return q
+    }
+    // Pattern 2: "2 x 3.99" or "2x 3.99" – quantity before x
+    const xMatch = normalized.match(/(?:^|\s)(\d+)\s*x\s*[\d.]/i)
+    if (xMatch) {
+      const q = parseInt(xMatch[1], 10)
+      if (q >= 1 && q <= 1000) return q
+    }
+    // Pattern 3: "QTY 2" or "Qty: 2"
+    const qtyMatch = normalized.match(/\bqty\s*[:\s]*(\d+)/i)
+    if (qtyMatch) {
+      const q = parseInt(qtyMatch[1], 10)
+      if (q >= 1 && q <= 1000) return q
+    }
+    // Pattern 4: "(2)" or "x2" or "2x" at word boundary
+    const parenMatch = normalized.match(/\b\((\d+)\)\b/)
+    if (parenMatch) {
+      const q = parseInt(parenMatch[1], 10)
+      if (q >= 1 && q <= 1000) return q
+    }
+    // Pattern 5: "2 for 5.00" or "2 FOR"
+    const forMatch = normalized.match(/\b(\d+)\s+for\b/i)
+    if (forMatch) {
+      const q = parseInt(forMatch[1], 10)
+      if (q >= 1 && q <= 1000) return q
+    }
+    // Pattern 6: "12 @" or "12 @ " at start of line (already in qtyAtStart but ensure we catch it)
+    const startMatch = normalized.match(/^(\d+)\s*[xX@]/)
+    if (startMatch) {
+      const q = parseInt(startMatch[1], 10)
+      if (q >= 1 && q <= 1000) return q
+    }
+    return 1
   }
   
   // Helper: Clean item name (strip item numbers, prices in name, Costco "E" prefix)
@@ -933,7 +1004,7 @@ export function parseReceiptOcrText(text: string): ParsedOcrReceipt {
         continue
       }
       
-      let unit = weightMatch[2].toLowerCase()
+      let unit = (weightMatch[2] || 'lb').toLowerCase()
       if (unit === 'lbs') unit = 'lb'
       
       // Extract unitPrice: last money/decimal on the weight line after "@", usually with 2 decimals
@@ -960,11 +1031,11 @@ export function parseReceiptOcrText(text: string): ParsedOcrReceipt {
       let extendedTotal: number | null = null
       let extendedTotalLineIndex: number | null = null
       
-      // Helper: Extract LAST money value from line (for extendedTotal, it's usually the rightmost value)
+      // Helper: Extract LAST money value from line (supports comma decimal)
       function extractLastMoney(line: string): number | null {
-        const matches = line.match(MONEY_REGEX)
+        const normalized = normalizeDecimalInLine(line)
+        const matches = normalized.match(MONEY_REGEX)
         if (!matches || matches.length === 0) return null
-        // Use LAST match (rightmost money value) - this is typically the line total
         const value = parseFloat(matches[matches.length - 1])
         return (!isNaN(value) && value > 0 && value <= 10000) ? value : null
       }
@@ -976,7 +1047,7 @@ export function parseReceiptOcrText(text: string): ParsedOcrReceipt {
         
         // Skip if this line looks like another item name (has 4+ letter words)
         const hasLongWords = /[A-Za-z]{4,}/.test(candidate)
-        const hasMoney = MONEY_REGEX.test(candidate)
+        const hasMoney = MONEY_REGEX.test(normalizeDecimalInLine(candidate))
         
         if (hasMoney && !hasLongWords) {
           // Try to extract money value - use LAST match (rightmost)
@@ -1117,21 +1188,39 @@ export function parseReceiptOcrText(text: string): ParsedOcrReceipt {
     let priceLine: string | undefined
     let price: number | null = null
     let linesConsumed = 1
+    let costcoQtyResult: { quantity: number; unitPrice: number; lineTotal?: number } | null = null
     
     // Check if current line has price (single-line item).
     const lineHasWeightUnit = /(?:lb|lbs|kg|oz)\b/i.test(line)
     const currentPrice = lineHasWeightUnit ? extractPriceExcludingWeight(line) : extractMoney(line)
     if (currentPrice !== null) {
-      // Single-line item: NAME + PRICE on same line
-      const priceStr = currentPrice.toFixed(2)
+      // Single-line item: NAME + PRICE on same line. Also check for "2 @ 3.99" or "2x 3.99" on same line.
+      const singleLineCostco = parseCostcoQtyAtLine(line)
+      if (singleLineCostco) {
+        costcoQtyResult = singleLineCostco
+        price = singleLineCostco.unitPrice
+      }
+      const priceStr = (price ?? currentPrice).toFixed(2)
       const priceIndex = line.lastIndexOf(priceStr)
       nameLine = priceIndex > 0 ? line.slice(0, priceIndex) : line
-      price = currentPrice
+      if (price === null) price = currentPrice
     } else {
-      // Multi-line item: NAME then PRICE (Walmart/Costco). Costco often has "ITEM# NAME" then "PRICE".
+      // Multi-line item: NAME then PRICE (Walmart/Costco). Costco often has "ITEM# NAME" then "N @ X.XX" or "PRICE".
       if (i + 1 < itemLines.length) {
         const candidateSkuLine = itemLines[i + 1]
-        if (isSkuLine(candidateSkuLine)) {
+        // Costco format: "12 @ 9,99" or "12 @ 9,99  119,88" – skip if next line is a fee (ECOFRAIS, CONSIGNE)
+        const costcoQty = parseCostcoQtyAtLine(candidateSkuLine)
+        if (costcoQty) {
+          const nextNext = itemLines[i + 2] || ''
+          if (!isNonItemLine(candidateSkuLine) && !isNonItemLine(nextNext)) {
+            nameLine = line
+            priceLine = candidateSkuLine
+            price = costcoQty.unitPrice
+            costcoQtyResult = costcoQty
+            linesConsumed = 2
+          }
+        }
+        if (price === null && isSkuLine(candidateSkuLine)) {
           const skuLetterCount = (candidateSkuLine.match(/[A-Za-z]/g) || []).length
           if (skuLetterCount >= 3) {
             // Costco: "ITEM# NAME" on this line, "PRICE" or "PRICE FLAG" on next (e.g. "18.99 A")
@@ -1184,31 +1273,43 @@ export function parseReceiptOcrText(text: string): ParsedOcrReceipt {
       continue // Skip if name is just the price
     }
     
-    // Extract quantity: defaults to 1, only set from explicit patterns
+    // Extract quantity: use Costco parse if available, else try all patterns across name/price lines
     let quantity = 1
-    const lineToCheckForQty = priceLine || line
-    const qtyAtStart = lineToCheckForQty.match(/^(\d+)\s*[X@]/i)
-    if (qtyAtStart) {
-      const qty = parseInt(qtyAtStart[1], 10)
-      if (!isNaN(qty) && qty > 0 && qty <= 1000) {
-        quantity = qty
+    let lineTotal = price
+    if (costcoQtyResult) {
+      quantity = costcoQtyResult.quantity
+      lineTotal = costcoQtyResult.lineTotal ?? price! * quantity
+    } else {
+      quantity = extractQuantityFromLines(nameLine, priceLine, line, skuLine)
+      // Infer quantity from lineTotal/unitPrice when we have two money values and ratio is whole
+      const allLinesForMoney = [nameLine, priceLine, line, skuLine].filter(Boolean).join(' ')
+      const moneyMatches = normalizeDecimalInLine(allLinesForMoney).match(/\d+\.\d{2}/g)
+      if (quantity === 1 && moneyMatches && moneyMatches.length >= 2) {
+        const values = [...new Set(moneyMatches.map(m => parseFloat(m)))].filter(v => v > 0 && v < 10000).sort((a, b) => a - b)
+        // Only infer when exactly 2 distinct values (unit price + line total) to avoid false positives
+        if (values.length === 2) {
+          const unitPrice = values[0]
+          const possibleLineTotal = values[1]
+          // Only infer when unitPrice matches our price (avoid false positives)
+          if (unitPrice > 0 && possibleLineTotal >= unitPrice && Math.abs(unitPrice - price!) < 0.02) {
+            const inferredQty = Math.round(possibleLineTotal / unitPrice)
+            if (inferredQty >= 2 && inferredQty <= 1000 && Math.abs(possibleLineTotal - unitPrice * inferredQty) < 0.02) {
+              quantity = inferredQty
+              lineTotal = possibleLineTotal
+            }
+          }
+        }
       }
-    }
-    const qtyKeyword = lineToCheckForQty.match(/\bQTY\s*(\d+)\b/i)
-    if (qtyKeyword) {
-      const qty = parseInt(qtyKeyword[1], 10)
-      if (!isNaN(qty) && qty > 0 && qty <= 1000) {
-        quantity = qty
-      }
+      if (lineTotal === price) lineTotal = price! * quantity
     }
     
-    // Create item: use price as lineTotal for count items
+    // Create item: use price as unit price, lineTotal from quantity * unit or Costco parse
     parsed.items.push({
       name,
-      price, // Unit price (for count items, same as lineTotal)
+      price: price!, // Unit price
       quantity,
       unit: 'pieces',
-      lineTotal: price * quantity // For count items, lineTotal = price * quantity
+      lineTotal
     })
     
     if (linesConsumed > 1) {

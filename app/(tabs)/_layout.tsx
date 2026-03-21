@@ -77,12 +77,12 @@ export default function TabsLayout() {
           tabBarIcon: ({ focused, color }) => <ProfessionalTabIcon iconComponent={HomeIcon} isActive={focused} color={color} />
         }} 
       />
-      {/* Recipes tab: shown when EXPO_PUBLIC_ENABLE_RECIPES=true */}
+      {/* Recipes tab: hidden for now – set href to "/(tabs)/recipes" to re-enable */}
       <Tabs.Screen 
         name="recipes" 
         options={{ 
           title: "Recipes",
-          href: config.enableRecipes ? "/(tabs)/recipes" : null,
+          href: null,
           tabBarIcon: ({ focused, color }) => <ProfessionalTabIcon iconComponent={RecipesIcon} isActive={focused} color={color} />,
         }} 
       />

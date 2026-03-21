@@ -5,3 +5,14 @@ android/.gradle/
 android/build/
 .DS_Store
 .env
+.env.production
+
+# Local Expo / Metro (do not commit)
+.expo/
+
+# Supabase CLI local state
+supabase/.temp/
+
+# Xcode / Xcodebuild logs
+*.xcodebuild.log
+**/xcodebuild*.log

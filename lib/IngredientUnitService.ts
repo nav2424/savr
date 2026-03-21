@@ -48,7 +48,7 @@ class IngredientUnitService {
     
     // Split by common separators and take the main part
     const parts = cleaned.split(/\s+(?:with|and|,)\s+/i)
-    cleaned = parts[0].trim()
+    cleaned = (parts[0] || cleaned).trim()
     
     // Remove trailing unit words (but keep "fillet" in name for detection)
     const words = cleaned.split(/\s+/)
@@ -356,6 +356,10 @@ class IngredientUnitService {
     }
     if (name.includes('tomato')) {
       return 'tomatoes'
+    }
+    // BLACK PEPPER - tsp (must check before generic pepper)
+    if (name.includes('pepper') && (name.includes('black') || name.includes('peppercorn'))) {
+      return 'tsp'
     }
     if (name.includes('pepper') && !name.includes('bell')) {
       return 'peppers'

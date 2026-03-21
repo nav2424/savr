@@ -86,6 +86,18 @@ export const config = {
     const v = readEnv('EXPO_PUBLIC_ENABLE_RECIPES', '').toLowerCase()
     return v === 'true' || v === '1'
   },
+
+  /**
+   * ISO datetime (UTC): accounts with auth created_at strictly before this get premium without RevenueCat
+   * when the DB grandfather column is false/missing (fallback if migration not applied yet).
+   * Set to empty string to disable client-side cutoff (DB flag only).
+   */
+  get paywallGrandfatherCutoffIso(): string {
+    return readEnv(
+      'EXPO_PUBLIC_PAYWALL_GRANDFATHER_CUTOFF_ISO',
+      '2026-03-20T00:00:00.000Z'
+    )
+  },
 }
 
 export default config

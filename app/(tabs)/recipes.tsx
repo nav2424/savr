@@ -50,6 +50,8 @@ const MEAL_TYPE_FILTERS = [
   { id: 'dessert', name: 'Desserts', icon: '🍰' }
 ]
 
+const COOK_NOW_LABEL = 'Cook Now'
+
 export default function RecipesScreen() {
   const { progressiveTheme } = useSimpleTheme()
   const router = useRouter()
@@ -69,12 +71,14 @@ export default function RecipesScreen() {
     toggleFavorite,
     refreshRecipes,
     getSuggestedRecipes,
+    getAlmostThereRecipes,
     getFavoriteRecipes,
     getCookedRecipes
   } = useRecipes()
 
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedMealType, setSelectedMealType] = useState('all')
+  const [cookNowFilter, setCookNowFilter] = useState(false) // Only 100% pantry match
   const [refreshing, setRefreshing] = useState(false)
   const [viewMode, setViewMode] = useState<'all' | 'favorites' | 'cooked'>('all')
 
@@ -115,6 +119,14 @@ export default function RecipesScreen() {
       filtered = filtered.filter(recipe => recipe.meal_type === selectedMealType)
     }
 
+    // Apply "Cook Now" filter - only recipes with 100% pantry match (no shopping needed)
+    if (cookNowFilter) {
+      filtered = filtered.filter(recipe => {
+        const match = recipe.matchPercentage ?? calculateIngredientMatch(recipe)
+        return match >= 100
+      })
+    }
+
     // Ensure all recipes are sorted by match percentage (descending)
     // Calculate match percentage if not already present
     const recipesWithMatch = filtered.map(recipe => ({
@@ -132,7 +144,13 @@ export default function RecipesScreen() {
     })
 
     return sortedRecipes
-  }, [recipes, searchQuery, selectedMealType, viewMode, getSuggestedRecipes, getFavoriteRecipes, getCookedRecipes])
+  }, [recipes, searchQuery, selectedMealType, cookNowFilter, viewMode, getSuggestedRecipes, getFavoriteRecipes, getCookedRecipes, calculateIngredientMatch])
+
+  // "Almost there" recipes - 70-99% match, 1-2 missing ingredients (only in 'all' view, no search)
+  const almostThereRecipes = useMemo(() => {
+    if (viewMode !== 'all' || searchQuery.trim() || cookNowFilter) return []
+    return getAlmostThereRecipes()
+  }, [viewMode, searchQuery, cookNowFilter, getAlmostThereRecipes])
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -481,7 +499,7 @@ export default function RecipesScreen() {
           </View>
         </View>
         
-        {/* Meal Type Filter */}
+        {/* Meal Type Filter + Cook Now */}
         <View style={styles.filterSection}>
           <ScrollView
             horizontal
@@ -512,10 +530,77 @@ export default function RecipesScreen() {
                   </Text>
                 </Pressable>
               ))}
+              {viewMode === 'all' && (
+                <Pressable
+                  style={[
+                    styles.filterButton,
+                    styles.cookNowButton,
+                    cookNowFilter && styles.filterButtonActive
+                  ]}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)
+                    setCookNowFilter(prev => !prev)
+                  }}
+                >
+                  <Text style={styles.filterEmoji}>✅</Text>
+                  <Text
+                    style={[
+                      styles.filterButtonText,
+                      cookNowFilter && styles.filterButtonTextActive
+                    ]}
+                  >
+                    {COOK_NOW_LABEL}
+                  </Text>
+                </Pressable>
+              )}
             </View>
           </ScrollView>
         </View>
         
+        {/* Almost There Section - 1-2 items to unlock */}
+        {almostThereRecipes.length > 0 && !loading && !error && (
+          <View style={styles.almostThereSection}>
+            <Text style={styles.almostThereTitle}>Almost there</Text>
+            <Text style={styles.almostThereSubtitle}>Add 1-2 items to unlock these recipes</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.almostThereScroll}
+              contentContainerStyle={styles.almostThereScrollContent}
+            >
+              {almostThereRecipes.map((recipe) => {
+                const ingredientMatch = recipe.matchPercentage ?? calculateIngredientMatch(recipe)
+                const missingCount = getMissingIngredients(recipe).length
+                return (
+                  <Pressable
+                    key={`almost-${recipe.id}`}
+                    style={styles.almostThereCard}
+                    onPress={() => handleRecipePress(recipe)}
+                  >
+                    <SimpleRecipeImage
+                      recipeTitle={recipe.title}
+                      recipeDescription={recipe.description}
+                      ingredients={recipe.ingredients?.map((ing: any) => ing.name)}
+                      style={styles.almostThereImage}
+                    />
+                    <View style={styles.almostThereBadge}>
+                      <Text style={styles.almostThereBadgeText}>
+                        +{missingCount} item{missingCount !== 1 ? 's' : ''}
+                      </Text>
+                    </View>
+                    <View style={styles.almostThereInfo}>
+                      <Text style={styles.almostThereRecipeTitle} numberOfLines={2}>
+                        {recipe.title}
+                      </Text>
+                      <Text style={styles.almostThereMatchText}>{ingredientMatch}% match</Text>
+                    </View>
+                  </Pressable>
+                )
+              })}
+            </ScrollView>
+          </View>
+        )}
+
         {/* Loading State */}
         {loading && (
           <View style={styles.loadingContainer}>
@@ -540,9 +625,13 @@ export default function RecipesScreen() {
             {filteredRecipes.length === 0 ? (
               <View style={styles.noResultsContainer}>
                 <Text style={styles.noResultsEmoji}>👨‍🍳</Text>
-                <Text style={styles.noResultsText}>No recipes found</Text>
+                <Text style={styles.noResultsText}>
+                  {cookNowFilter ? 'No "Cook Now" recipes yet' : 'No recipes found'}
+                </Text>
                 <Text style={styles.noResultsSubtext}>
-                  Add items to your pantry to discover recipes
+                  {cookNowFilter
+                    ? 'Add more pantry items to get 100% match recipes—or try recipes that need 1–2 ingredients'
+                    : 'Add items to your pantry to discover recipes'}
                 </Text>
               </View>
             ) : (
@@ -823,6 +912,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(106, 149, 113, 0.15)',
     borderColor: 'rgba(106, 149, 113, 0.3)',
   },
+  cookNowButton: {
+    borderColor: 'rgba(106, 149, 113, 0.5)',
+  },
   filterEmoji: {
     fontSize: 16,
   },
@@ -834,6 +926,75 @@ const styles = StyleSheet.create({
   filterButtonTextActive: {
     fontWeight: '600',
     color: '#6A9571',
+  },
+  // Almost There Section
+  almostThereSection: {
+    marginBottom: 24,
+    paddingHorizontal: 20,
+  },
+  almostThereTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#000000',
+    marginBottom: 4,
+  },
+  almostThereSubtitle: {
+    fontSize: 14,
+    color: '#8E8E93',
+    marginBottom: 12,
+  },
+  almostThereScroll: {
+    marginHorizontal: -20,
+  },
+  almostThereScrollContent: {
+    paddingHorizontal: 20,
+  },
+  almostThereCard: {
+    width: 160,
+    marginRight: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 6,
+    borderWidth: 2,
+    borderColor: 'rgba(106, 149, 113, 0.2)',
+  },
+  almostThereImage: {
+    width: '100%',
+    height: 100,
+    backgroundColor: '#F0F0F0',
+  },
+  almostThereBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    backgroundColor: '#FF9500',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  almostThereBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  almostThereInfo: {
+    padding: 12,
+  },
+  almostThereRecipeTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#000000',
+    marginBottom: 4,
+  },
+  almostThereMatchText: {
+    fontSize: 12,
+    color: '#6A9571',
+    fontWeight: '600',
   },
   difficultyButton: {
     backgroundColor: 'rgba(255, 255, 255, 0.8)',

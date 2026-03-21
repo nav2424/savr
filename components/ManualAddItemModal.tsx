@@ -50,6 +50,8 @@ const CATEGORIES = [
   { id: 'Plant-Based Proteins & Legumes', label: 'Proteins and Legumes', emoji: '🍱' },
   { id: 'Snacks, Sweets & Desserts', label: 'Snacks, Sweets & Desserts', emoji: '🍫' },
   { id: 'Beverages', label: 'Beverages', emoji: '🥤' },
+  { id: 'Frozen', label: 'Frozen', emoji: '❄️' },
+  { id: 'Household & Cleaning', label: 'Household & Cleaning', emoji: '🧹' },
   { id: 'Non-Food / Misc', label: 'Non-Food / Misc', emoji: '📦' },
 ]
 

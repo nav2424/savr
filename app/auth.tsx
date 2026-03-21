@@ -12,7 +12,7 @@ import {
   ActivityIndicator,
 } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient'
-import { useRouter } from 'expo-router'
+import { useRouter, useLocalSearchParams } from 'expo-router'
 import * as Haptics from 'expo-haptics'
 import { useAuth } from '../lib/AuthContext'
 import { supabase } from '../lib/supabase'
@@ -22,6 +22,7 @@ import { getPasswordResetRedirectUrl } from '../lib/authDeepLink'
 
 export default function AuthScreen() {
   const router = useRouter()
+  const params = useLocalSearchParams<{ next?: string | string[] }>()
   const { signIn, signUp } = useAuth()
   const { showToast } = useToast()
   const [isSignUp, setIsSignUp] = useState(false) // Sign-in by default; new users go to onboarding
@@ -32,6 +33,10 @@ export default function AuthScreen() {
   const [loading, setLoading] = useState(false)
   const [emailError, setEmailError] = useState<string | null>(null)
   const [resettingPassword, setResettingPassword] = useState(false)
+  const nextRaw = params.next
+  const nextRoute = Array.isArray(nextRaw) ? nextRaw[0] : nextRaw
+  const safeNextRoute =
+    typeof nextRoute === 'string' && nextRoute.startsWith('/') ? nextRoute : null
 
   const validateEmail = (email: string): { valid: boolean; error?: string } => {
     const trimmed = email.trim().toLowerCase()
@@ -92,31 +97,33 @@ export default function AuthScreen() {
         // Sign up - normalize email (trim + lowercase) before sending to Supabase
         const { error, emailWarning } = await signUp(trimmedEmail, password, name.trim())
         
-        // Immediately stop loading and navigate on success (optimistic)
+        // Stop loading, then show a blocking alert so reviewers and users see verification guidance (toasts are easy to miss).
         if (!error) {
           setLoading(false)
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
-          
-          // Navigate immediately - don't wait for alerts
-          // Show non-blocking toasts for success messaging
-          setTimeout(() => {
-            if (emailWarning) {
-              const isSmtpIssue = emailWarning.startsWith('SMTP_')
-              
-              if (isSmtpIssue) {
-                const instructions = getSmtpSetupInstructions(emailWarning)
-                const instructionsText = instructions.join('\n')
-                showToast(`Account created. Email verification not configured yet.\n\n${instructionsText}`, { kind: 'warning', durationMs: 5000 })
-              } else {
-                showToast('Account created. Verification email could not be sent right now.', { kind: 'warning', durationMs: 3500 })
-              }
+          try {
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+          } catch {
+            /* haptics optional */
+          }
+
+          const goOnboarding = () =>
+            router.replace(`/onboarding?email=${encodeURIComponent(trimmedEmail)}`)
+
+          let title = 'Check your email'
+          let message = `We sent a verification link to ${trimmedEmail}.\n\nCheck your inbox and spam folder. If nothing arrives in a few minutes, use “Resend verification” on the email verification screen.`
+
+          if (emailWarning) {
+            title = 'Account created'
+            const isSmtpIssue = emailWarning.startsWith('SMTP_')
+            if (isSmtpIssue) {
+              const instructions = getSmtpSetupInstructions(emailWarning)
+              message = `Your account was created. A verification email may not arrive until email is configured on our servers.\n\n${instructions.slice(0, 4).join('\n')}\n\nAfter continuing, use “Resend verification” or contact support if you need help.`
             } else {
-              showToast('Account created. Check your email to verify.', { kind: 'success' })
+              message = `Your account was created. If you don’t see a verification email, check spam or use “Resend verification” after continuing.`
             }
-          }, 100)
-          
-          // Navigate immediately without waiting
-          router.replace(`/onboarding?email=${encodeURIComponent(trimmedEmail)}`)
+          }
+
+          Alert.alert(title, message, [{ text: 'Continue', onPress: goOnboarding }])
           return
         }
         
@@ -232,9 +239,8 @@ export default function AuthScreen() {
         if (error) {
           showToast(error.message || 'Invalid credentials.', { kind: 'error', durationMs: 3500 })
         } else {
-          // Existing users go to tabs
-          // Paywall is controlled by EXPO_PUBLIC_ENABLE_PAYWALL; when off, go straight to tabs
-          router.replace('/(tabs)')
+          // Return to pending deep-link destination after auth (e.g. family invite accept).
+          router.replace((safeNextRoute ?? '/(tabs)') as any)
         }
       }
     } catch (error: any) {

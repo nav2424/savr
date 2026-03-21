@@ -326,6 +326,7 @@ class IngredientMatchingService {
    * Made public for use in scoring service
    */
   normalize(ingredient: string): string {
+    if (ingredient == null || typeof ingredient !== 'string') return ''
     let normalized = ingredient.toLowerCase().trim()
 
     // CRITICAL: Handle French/English translations BEFORE other normalization

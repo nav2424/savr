@@ -310,8 +310,11 @@ ${JSON.stringify(variables, null, 2)}
   - Multiple complementary items (e.g., Eggs + Rice + Tomato Juice + Shallots for breakfast bowls)
 - **Key principle:** Combine pantry items in ways that make culinary sense and create complete, satisfying meals
 
-**Normalization Rules:**
-- Remove brand names and descriptors (e.g., "Kirkland Signature", "Original", "2% PūrFiltre")
+**Normalization Rules (CRITICAL for recipe quality):**
+- In "available", "missing", and "staples" lists, use ONLY generic ingredient names (e.g., "eggs", "tomato sauce", "chicken", "potatoes", "black pepper")
+- NEVER use raw pantry product names in recipes (e.g., "Egg Best Organic", "Classico Tomato Garlic Sauce", "Sweet Potatoes (u.s.)-big")
+- Recipe titles must use generic names: "Chicken and Mushroom Stir-Fry" NOT "Chicken and White Mushrooms Stir-Fry" with product names
+- Remove brand names and descriptors (e.g., "Kirkland Signature", "Original", "Classico", "Hass")
 - Normalize spelling variants (e.g., "Greek Yogourt" → "greek yogurt", "Salmon Fillet" → "salmon")
 - Exclude non-edible items (e.g., parchment paper)
 - If FORBIDDEN_INGREDIENTS includes "Gluten" or "Wheat", automatically exclude tortillas and flour-based items
@@ -658,13 +661,15 @@ Generate ${count} recipes following this EXACT format and level of detail.
               }
             }
 
-            // CRITICAL: If unit is missing or "unit", get proper recipe unit from IngredientUnitService
+            // CRITICAL: If unit is missing or invalid, get proper recipe unit from IngredientUnitService
+            const invalidUnits = ['unit', 'units', 'peppers']
             let finalUnit = unit
             let finalQuantity = quantity || '1'
-            
-            if (!finalUnit || finalUnit === 'unit' || finalUnit === 'units') {
+            const needsUnitFix = !finalUnit || invalidUnits.includes(finalUnit.toLowerCase?.() || '') ||
+              (finalUnit === 'peppers' && name.toLowerCase().includes('black pepper'))
+            if (needsUnitFix) {
               const unitResult = ingredientUnitService.getIngredientUnit(name, [], householdSize)
-              finalUnit = unitResult.unit // Recipe unit: tbsp, g, ml, cups, pieces
+              finalUnit = unitResult.unit
               finalQuantity = unitResult.quantity
             }
             
@@ -773,19 +778,31 @@ Generate ${count} recipes following this EXACT format and level of detail.
       'brand',
       'original',
       'protein',
+      'best',
+      'organic',
+      'classico',
+      'hass',
+      'big',
+      'mini',
       'signature',
       'cow’s',
       "cow's",
     ]
 
-    const cleaned = name
+    let cleaned = name
       .toLowerCase()
+      .replace(/\([^)]*\)/g, ' ')
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
       .filter(token => token && !tokensToRemove.includes(token))
       .join(' ')
+      .replace(/\s+/g, ' ')
       .trim()
-
+    if (cleaned.includes('egg')) return 'eggs'
+    if (cleaned.includes('tomato') && (cleaned.includes('sauce') || cleaned.includes('garlic') || cleaned.includes('basil'))) return 'tomato sauce'
+    if (cleaned.includes('potato')) return cleaned.includes('sweet') ? 'sweet potato' : 'potato'
+    if (cleaned.includes('avocado')) return 'avocado'
+    if (cleaned.includes('mushroom')) return 'mushrooms'
     return cleaned || name.toLowerCase()
   }
 

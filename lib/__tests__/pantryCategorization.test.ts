@@ -27,7 +27,6 @@ describe('Pantry categorization (full-name aware)', () => {
       expect(detectCategoryFromName('Shave Gel')).toBe('Non-Food / Misc')
       expect(detectCategoryFromName('Shea Conditioner')).toBe('Non-Food / Misc')
       expect(detectCategoryFromName('Cerave Cream')).toBe('Non-Food / Misc')
-      expect(detectCategoryFromName('Downy Ultimate')).toBe('Non-Food / Misc')
       expect(detectCategoryFromName('Degree Ultra')).toBe('Non-Food / Misc')
       expect(detectCategoryFromName('Dove Invigorating')).toBe('Non-Food / Misc')
     })
@@ -65,6 +64,40 @@ describe('Pantry categorization (full-name aware)', () => {
     expect(detectCategoryFromName('coriander seeds')).toBe('Pantry Staples & Essentials')
     expect(detectCategoryFromName('ground coriander')).toBe('Pantry Staples & Essentials')
   })
+
+  describe('frozen items', () => {
+    it('classifies frozen chicken, beef, fish as Frozen (not Meat)', () => {
+      expect(detectCategoryFromName('frozen chicken')).toBe('Frozen')
+      expect(detectCategoryFromName('frozen beef')).toBe('Frozen')
+      expect(detectCategoryFromName('frozen fish')).toBe('Frozen')
+      expect(detectCategoryFromName('frozen broccoli')).toBe('Frozen')
+      expect(detectCategoryFromName('frozen pizza')).toBe('Frozen')
+    })
+  })
+
+  describe('household & cleaning', () => {
+    it('classifies cleaning products as Household & Cleaning', () => {
+      expect(detectCategoryFromName('dish soap')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('laundry detergent')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('bleach')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('all-purpose cleaner')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('paper towels')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('trash bags')).toBe('Household & Cleaning')
+    })
+
+    it('classifies garbage bags, vim, javel, parchment paper, aluminium foil as Household & Cleaning', () => {
+      expect(detectCategoryFromName('garbage bags')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('garbage bag')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('Vim')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('Javel')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('parchment paper')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('aluminium foil')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('aluminum foil')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('baking paper')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('wax paper')).toBe('Household & Cleaning')
+      expect(detectCategoryFromName('Kirkland parchment paper')).toBe('Household & Cleaning')
+    })
+  })
 })
 
 describe('List categorization (full-name aware)', () => {
@@ -79,6 +112,24 @@ describe('List categorization (full-name aware)', () => {
   it('classifies coriander and coriander leaves as Produce', () => {
     expect(categorizeForShopping('coriander')).toBe('Produce')
     expect(categorizeForShopping('coriander leaves')).toBe('Produce')
+  })
+
+  it('classifies frozen chicken as Frozen (not Meat)', () => {
+    expect(categorizeForShopping('frozen chicken')).toBe('Frozen')
+    expect(categorizeForShopping('frozen pizza')).toBe('Frozen')
+  })
+
+  it('classifies cleaning products as Household & Cleaning', () => {
+    expect(categorizeForShopping('dish soap')).toBe('Household & Cleaning')
+    expect(categorizeForShopping('laundry detergent')).toBe('Household & Cleaning')
+  })
+
+  it('classifies garbage bags, vim, parchment paper, aluminium foil as Household & Cleaning', () => {
+    expect(categorizeForShopping('garbage bags')).toBe('Household & Cleaning')
+    expect(categorizeForShopping('Vim')).toBe('Household & Cleaning')
+    expect(categorizeForShopping('parchment paper')).toBe('Household & Cleaning')
+    expect(categorizeForShopping('aluminium foil')).toBe('Household & Cleaning')
+    expect(categorizeForShopping('bleach')).toBe('Household & Cleaning')
   })
 })
 

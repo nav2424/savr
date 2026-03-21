@@ -270,9 +270,14 @@ export function ReceiptsProvider({ children }: { children: ReactNode }) {
       'Produce': '#51CF66',
       'Dairy': '#339AF0',
       'Meat & Seafood': '#FF6B6B',
+      'Meat, Poultry & Seafood': '#FF6B6B',
       'Pantry Staples': '#8B7355',
+      'Pantry Staples & Essentials': '#8B7355',
       'Snacks': '#FFA726',
+      'Snacks, Sweets & Desserts': '#FFA726',
       'Beverages': '#4DABF7',
+      'Frozen': '#64B5F6',
+      'Household & Cleaning': '#5E5CE6',
       'Other': '#868E96',
     }
     
@@ -280,9 +285,14 @@ export function ReceiptsProvider({ children }: { children: ReactNode }) {
       'Produce': '🥬',
       'Dairy': '🥛',
       'Meat & Seafood': '🥩',
+      'Meat, Poultry & Seafood': '🍗',
       'Pantry Staples': '🥫',
+      'Pantry Staples & Essentials': '🧂',
       'Snacks': '🍿',
+      'Snacks, Sweets & Desserts': '🍫',
       'Beverages': '☕',
+      'Frozen': '❄️',
+      'Household & Cleaning': '🧹',
       'Other': '🛒',
     }
 

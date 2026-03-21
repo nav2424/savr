@@ -1,7 +1,7 @@
 // Supabase Client Configuration
 import { createClient, SupabaseClient } from '@supabase/supabase-js'
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import config from '../config'
+import { secureStorage } from './secureStorage'
 
 let supabaseClient: SupabaseClient | null = null
 
@@ -13,14 +13,13 @@ const getSupabaseClient = (): SupabaseClient => {
 
   if (!supabaseUrl || !supabaseAnonKey) {
     const errorMessage = 'Supabase configuration is missing. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY in EAS environment variables.'
-    console.error('⚠️', errorMessage)
-    // Throw error but with better message - ErrorBoundary will catch it
+    if (__DEV__) console.error('⚠️', errorMessage)
     throw new Error(errorMessage)
   }
 
   supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
-      storage: AsyncStorage,
+      storage: secureStorage,
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: false,
@@ -47,6 +46,8 @@ export interface User {
   avatar_url?: string
   created_at: string
   last_seen: string
+  /** Set once for early users; grants in-app premium without a store subscription. */
+  grandfathered_lifetime_premium?: boolean
 }
 
 export interface List {

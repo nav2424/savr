@@ -28,11 +28,10 @@ export default {
     orientation: "portrait",
     extra: { 
       API_BASE: process.env.EXPO_PUBLIC_API_BASE || process.env.API_BASE || "http://localhost:3000", // Update this to your backend URL
-      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-      // Pass through environment variables so they are available in dev client/TestFlight
+      // SECURITY: Do NOT pass server-only keys (OPENAI_API_KEY, etc.) - they would be bundled into the client.
+      // Only EXPO_PUBLIC_* vars are safe for client; server keys stay in server/.env
       EXPO_PUBLIC_OPENROUTER_API_KEY: process.env.EXPO_PUBLIC_OPENROUTER_API_KEY,
       EXPO_PUBLIC_UNSPLASH_ACCESS_KEY: process.env.EXPO_PUBLIC_UNSPLASH_ACCESS_KEY || process.env.UNSPLASH_ACCESS_KEY,
-      UNSPLASH_ACCESS_KEY: process.env.UNSPLASH_ACCESS_KEY,
       EXPO_PUBLIC_SUPABASE_URL: process.env.EXPO_PUBLIC_SUPABASE_URL,
       EXPO_PUBLIC_SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
       EXPO_PUBLIC_EMAIL_VERIFICATION_REDIRECT_URL: process.env.EXPO_PUBLIC_EMAIL_VERIFICATION_REDIRECT_URL,
@@ -64,7 +63,14 @@ export default {
         ITSAppUsesNonExemptEncryption: false,
         // Responsive design settings
         UIUserInterfaceStyle: "Dark",
-        UIStatusBarStyle: "UIStatusBarStyleLightContent"
+        UIStatusBarStyle: "UIStatusBarStyleLightContent",
+        // So Linking.canOpenURL works for mail apps (Open mail app button on email verification)
+        LSApplicationQueriesSchemes: [
+          "message",
+          "googlegmail",
+          "ms-outlook",
+          "readdle-spark",
+        ],
       },
       bundleIdentifier: "com.arnavsaluja.savr"
     },

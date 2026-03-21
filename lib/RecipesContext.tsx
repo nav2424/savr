@@ -133,6 +133,7 @@ interface RecipesContextType {
   getFavoriteRecipes: () => SavedRecipe[]
   getCookedRecipes: () => SavedRecipe[] // Returns recipes that have been cooked (times_cooked > 0)
   getSuggestedRecipes: () => Recipe[] // Returns recipes sorted by match percentage for dashboard/recipes sync
+  getAlmostThereRecipes: () => Recipe[] // Recipes with 70-99% match, 1-2 missing ingredients
   
   // Refresh
   refreshRecipes: () => Promise<void>
@@ -1868,6 +1869,32 @@ export function RecipesProvider({ children }: { children: ReactNode }) {
     return matchPercentage
   }
 
+  // Count how many recipe ingredients match pantry items expiring within 7 days
+  const getExpiringIngredientCount = (recipe: Recipe): number => {
+    if (!recipe.ingredients?.length || !pantryItems?.length) return 0
+    const now = new Date()
+    const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+    const expiringItems = pantryItems.filter(item => {
+      if (!item.expiry_date) return false
+      const expiryDate = new Date(item.expiry_date)
+      return expiryDate >= now && expiryDate <= sevenDaysFromNow
+    })
+    if (expiringItems.length === 0) return 0
+    let count = 0
+    for (const ing of recipe.ingredients) {
+      const ingName = ing.name?.trim()
+      if (!ingName) continue
+      for (const pantryItem of expiringItems) {
+        const match = ingredientMatchingService.matchIngredient(ingName, pantryItem.name)
+        if (match.isMatch && match.confidence >= 0.70) {
+          count++
+          break
+        }
+      }
+    }
+    return count
+  }
+
   const getMissingIngredients = (recipe: Recipe): string[] => {
     if (!recipe.ingredients || recipe.ingredients.length === 0) return []
     if (!pantryItems || pantryItems.length === 0) {
@@ -1892,8 +1919,8 @@ export function RecipesProvider({ children }: { children: ReactNode }) {
         }
       }
       
-      if (!hasMatch) {
-        missing.push(ingredient.name)
+      if (!hasMatch && ingredient.name?.trim()) {
+        missing.push(ingredient.name.trim())
       }
     })
 
@@ -1984,12 +2011,15 @@ export function RecipesProvider({ children }: { children: ReactNode }) {
         return recipe.matchPercentage > 0 || recipe.isAIGenerated
       })
     
-    // Sort by match percentage (highest first) - descending order
+    // Sort: (1) Expiring-first - recipes using items expiring within 7 days go to top
+    //        (2) Match percentage (highest first)
     recipesWithMatch.sort((a, b) => {
+      const expiringA = getExpiringIngredientCount(a)
+      const expiringB = getExpiringIngredientCount(b)
+      if (expiringB !== expiringA) return expiringB - expiringA // More expiring = higher
       const matchA = a.matchPercentage ?? 0
       const matchB = b.matchPercentage ?? 0
-      const result = matchB - matchA // Descending order (highest first)
-      return result
+      return matchB - matchA // Descending by match
     })
     
     console.log(`🎯 getSuggestedRecipes returning ${recipesWithMatch.length} recipes SORTED by match percentage (highest to lowest)`)
@@ -2008,6 +2038,16 @@ export function RecipesProvider({ children }: { children: ReactNode }) {
     }
     
     return recipesWithMatch
+  }
+
+  // "Almost there" - recipes with 70-99% match and 1-2 missing ingredients
+  const getAlmostThereRecipes = (): Recipe[] => {
+    const suggested = getSuggestedRecipes()
+    return suggested.filter(recipe => {
+      const match = recipe.matchPercentage ?? calculateIngredientMatch(recipe)
+      const missing = getMissingIngredients(recipe)
+      return match >= 70 && match < 100 && missing.length >= 1 && missing.length <= 2
+    }).slice(0, 6) // Limit to 6 for the section
   }
 
   // 🚀 REAL-TIME RECIPE GENERATION - No need for old personalization logic
@@ -2108,6 +2148,7 @@ export function RecipesProvider({ children }: { children: ReactNode }) {
         getFavoriteRecipes,
         getCookedRecipes,
         getSuggestedRecipes,
+        getAlmostThereRecipes,
         refreshRecipes,
         regenerateAIRecipes,
         clearAndRegenerateRecipes,

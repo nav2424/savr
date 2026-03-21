@@ -24,26 +24,20 @@ class PersonalizedRecipeService {
    */
   async generatePersonalizedRecipes(request: PersonalizedRecipeRequest) {
     try {
-      console.log('🎯 Personalized Recipe Service: Starting generation for user', request.userId)
-      console.log('📊 Request details:', {
-        maxResults: request.maxResults,
-        timeLimit: request.timeLimit,
-        skillLevel: request.skillLevel
-      })
+      if (__DEV__) {
+        console.log('🎯 Personalized Recipe Service: Starting generation')
+        console.log('📊 Request:', { maxResults: request.maxResults, timeLimit: request.timeLimit, skillLevel: request.skillLevel })
+      }
 
       // Get user's pantry items
       const pantryItems = await this.getUserPantryItems(request.userId)
-      console.log('📦 Retrieved pantry items:', pantryItems.length, 'items')
-      console.log('📦 Pantry items:', pantryItems.map(item => `${item.name} (${item.qty} ${item.unit})`))
-      
-      // Use actual pantry items - no test ingredients
-      if (pantryItems.length === 0) {
-        console.log('⚠️ No pantry items found - will create basic recipes')
+      if (__DEV__) {
+        console.log('📦 Retrieved pantry items:', pantryItems.length, 'items')
+        if (pantryItems.length === 0) console.log('⚠️ No pantry items found - will create basic recipes')
       }
       
       // Get user preferences
       const preferences = userPreferencesService.getPreferences()
-      console.log('👤 User preferences:', preferences)
       
       // Get user's recent recipe history for novelty tracking
       const recentRecipes = await this.getRecentRecipes(request.userId, 14) // Last 14 days
@@ -72,20 +66,13 @@ class PersonalizedRecipeService {
       }
 
       // Generate recipes using advanced generator
-      console.log('🚀 Calling advanced recipe generator...')
       const generatedRecipes = await advancedRecipeGenerator.generatePersonalizedRecipes(advancedRequest)
-      console.log('📋 Advanced generator returned:', generatedRecipes.length, 'recipes')
 
       // Convert to Recipe format for existing system
       const recipes = generatedRecipes.map(recipe => this.convertToRecipeFormat(recipe, request.userId))
-      console.log('🔄 Converted to Recipe format:', recipes.length, 'recipes')
-      console.log('📝 Recipe titles:', recipes.map(r => r.title))
 
-      console.log(`✨ Generated ${recipes.length} personalized recipes`)
-      
-      // If no recipes generated, create simple fallback recipes
       if (recipes.length === 0) {
-        console.log('🔄 No recipes generated, creating simple fallback recipes...')
+        if (__DEV__) console.log('🔄 No recipes generated, creating simple fallback recipes...')
         const fallbackRecipes = this.createSimpleFallbackRecipes(request.userId, pantryItems)
         return fallbackRecipes
       }
@@ -93,18 +80,14 @@ class PersonalizedRecipeService {
       return recipes
 
     } catch (error) {
-      console.error('❌ Personalized Recipe Service Error:', error)
-      console.error('❌ Error details:', error)
-      console.error('❌ Error stack:', (error as any)?.stack)
-      console.error('❌ Full error object:', error)
+      console.error('❌ Personalized Recipe Service Error:', error instanceof Error ? error.message : String(error))
       
       // Create simple fallback recipes even if everything fails
-      console.log('🔄 Creating emergency fallback recipes...')
       try {
         const emergencyRecipes = this.createSimpleFallbackRecipes(request.userId, [])
         return emergencyRecipes
       } catch (fallbackError) {
-        console.error('❌ Even fallback failed:', fallbackError)
+        console.error('❌ Even fallback failed:', fallbackError instanceof Error ? fallbackError.message : String(fallbackError))
         return []
       }
     }
@@ -115,7 +98,7 @@ class PersonalizedRecipeService {
    */
   private async getUserPantryItems(userId: string) {
     try {
-      console.log('🔍 Fetching pantry items for user:', userId)
+      if (__DEV__) console.log('🔍 Fetching pantry items for user')
       const { data, error } = await supabase
         .from('pantry_items')
         .select('name, quantity, unit, category')
@@ -133,8 +116,7 @@ class PersonalizedRecipeService {
         category: item.category
       }))
 
-      console.log('✅ Retrieved pantry items from database:', pantryItems.length, 'items')
-      console.log('📦 Pantry items:', pantryItems.map(item => `${item.name} (${item.qty} ${item.unit})`))
+      if (__DEV__) console.log('✅ Retrieved pantry items from database:', pantryItems.length, 'items')
       
       return pantryItems
     } catch (error) {
@@ -264,7 +246,7 @@ class PersonalizedRecipeService {
    * Create simple fallback recipes when the advanced system fails
    */
   private createSimpleFallbackRecipes(userId: string, pantryItems: any[]): any[] {
-    console.log('🆘 Creating simple fallback recipes...')
+    if (__DEV__) console.log('🆘 Creating simple fallback recipes...')
     
     const basicRecipes = [
       {
@@ -351,7 +333,7 @@ class PersonalizedRecipeService {
       }
     ]
 
-    console.log(`✅ Created ${basicRecipes.length} fallback recipes`)
+    if (__DEV__) console.log(`✅ Created ${basicRecipes.length} fallback recipes`)
     return basicRecipes
   }
 

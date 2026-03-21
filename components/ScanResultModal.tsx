@@ -355,6 +355,67 @@ export default function ScanResultModal({ visible, product, allergenCheck, scanS
                   </View>
                 )}
 
+                {/* UNKNOWN fallback actions */}
+                {riskLevel === 'INSUFFICIENT_DATA' && (
+                  <View style={{ marginBottom: 20 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#374151', marginBottom: 10 }}>
+                      Help us verify ingredients
+                    </Text>
+                    <View style={{ gap: 10 }}>
+                      {!!allergenCheck.fallbackCtas?.scanLabelPhoto && (
+                        <Pressable
+                          style={{
+                            backgroundColor: '#111827',
+                            paddingVertical: 12,
+                            paddingHorizontal: 14,
+                            borderRadius: 12,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 8,
+                          }}
+                          onPress={() => {
+                            if (!scanSessionId || !barcode) return
+                            setShowAllergenDetail(false)
+                            setTimeout(() => router.push(`/scan-label-ocr?sessionId=${encodeURIComponent(scanSessionId)}&barcode=${encodeURIComponent(barcode)}` as any), 250)
+                          }}
+                          disabled={!scanSessionId || !barcode}
+                        >
+                          <Ionicons name="camera" size={18} color="#FFFFFF" />
+                          <Text style={{ color: '#FFFFFF', fontSize: 15, fontWeight: '700' }}>Scan label photo</Text>
+                        </Pressable>
+                      )}
+
+                      {!!allergenCheck.fallbackCtas?.pasteIngredientsManually && (
+                        <Pressable
+                          style={{
+                            backgroundColor: 'rgba(17, 24, 39, 0.06)',
+                            paddingVertical: 12,
+                            paddingHorizontal: 14,
+                            borderRadius: 12,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 8,
+                            borderWidth: 1,
+                            borderColor: 'rgba(17, 24, 39, 0.12)',
+                          }}
+                          onPress={() => {
+                            if (!scanSessionId || !barcode) return
+                            setShowAllergenDetail(false)
+                            const pn = product?.name ? `&productName=${encodeURIComponent(product.name)}` : ''
+                            setTimeout(() => router.push(`/paste-ingredients?sessionId=${encodeURIComponent(scanSessionId)}&barcode=${encodeURIComponent(barcode)}${pn}` as any), 250)
+                          }}
+                          disabled={!scanSessionId || !barcode}
+                        >
+                          <Ionicons name="clipboard" size={18} color="#111827" />
+                          <Text style={{ color: '#111827', fontSize: 15, fontWeight: '800' }}>Paste ingredients</Text>
+                        </Pressable>
+                      )}
+                    </View>
+                  </View>
+                )}
+
                 {/* Detected Ingredients / Terms — Evidence-based (match_text + section) */}
                 {(riskLevel === 'HIGH_RISK' || riskLevel === 'POSSIBLE_RISK') && (
                   <View style={{ marginBottom: 24 }}>
@@ -366,26 +427,63 @@ export default function ScanResultModal({ visible, product, allergenCheck, scanS
                     }}>
                       {riskLevel === 'HIGH_RISK' ? 'Evidence — ingredients flagged:' : 'Evidence — possible traces:'}
                     </Text>
-                    <View style={{ gap: 8 }}>
-                      {allergenCheck.matches && allergenCheck.matches.length > 0 ? (
-                        allergenCheck.matches.map((match, index) => {
-                          const sectionLabel = getSectionLabel(match.source, { bilingual: true })
-                          return (
-                            <View key={index} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                              <Ionicons name="close-circle" size={16} color={headerColor} />
-                              <Text style={{ fontSize: 14, color: headerColor, fontWeight: '500' }}>{match.allergen}</Text>
-                              <Text style={{ fontSize: 12, color: '#6B7280' }}>— "{match.matchedTerm}" ({sectionLabel})</Text>
-                            </View>
-                          )
-                        })
-                      ) : (
-                        (allergenCheck.detectedAllergens?.length ? allergenCheck.detectedAllergens : matchedTerms).map((term, index) => (
-                          <View key={index} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                            <Ionicons name="close-circle" size={16} color={headerColor} />
-                            <Text style={{ fontSize: 14, color: headerColor, fontWeight: '500' }}>{term}</Text>
-                          </View>
-                        ))
-                      )}
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
+                      {(allergenCheck.matches && allergenCheck.matches.length > 0
+                        ? allergenCheck.matches.map((match, index) => {
+                            const sectionLabel = getSectionLabel(match.source, { bilingual: true })
+                            const isHigh = riskLevel === 'HIGH_RISK'
+                            const bg = isHigh ? 'rgba(220, 38, 38, 0.12)' : 'rgba(245, 158, 11, 0.14)'
+                            const border = isHigh ? 'rgba(220, 38, 38, 0.28)' : 'rgba(245, 158, 11, 0.28)'
+                            const color = isHigh ? '#991B1B' : '#92400E'
+                            return (
+                              <View
+                                key={`${match.allergen}-${match.matchedTerm}-${index}`}
+                                style={{
+                                  backgroundColor: bg,
+                                  borderColor: border,
+                                  borderWidth: 1,
+                                  paddingHorizontal: 12,
+                                  paddingVertical: 10,
+                                  borderRadius: 14,
+                                  maxWidth: '100%',
+                                }}
+                              >
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                  <Ionicons name={isHigh ? 'warning' : 'alert-circle'} size={16} color={color} />
+                                  <Text style={{ fontSize: 14, fontWeight: '800', color }} numberOfLines={1}>
+                                    {match.allergen}
+                                  </Text>
+                                </View>
+                                <Text style={{ marginTop: 4, fontSize: 12, color: '#374151', lineHeight: 16 }}>
+                                  “{match.matchedTerm}” · {sectionLabel}
+                                </Text>
+                              </View>
+                            )
+                          })
+                        : (allergenCheck.detectedAllergens?.length ? allergenCheck.detectedAllergens : matchedTerms).map((term, index) => {
+                            const isHigh = riskLevel === 'HIGH_RISK'
+                            const bg = isHigh ? 'rgba(220, 38, 38, 0.12)' : 'rgba(245, 158, 11, 0.14)'
+                            const border = isHigh ? 'rgba(220, 38, 38, 0.28)' : 'rgba(245, 158, 11, 0.28)'
+                            const color = isHigh ? '#991B1B' : '#92400E'
+                            return (
+                              <View
+                                key={`${term}-${index}`}
+                                style={{
+                                  backgroundColor: bg,
+                                  borderColor: border,
+                                  borderWidth: 1,
+                                  paddingHorizontal: 12,
+                                  paddingVertical: 10,
+                                  borderRadius: 14,
+                                }}
+                              >
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                  <Ionicons name={isHigh ? 'warning' : 'alert-circle'} size={16} color={color} />
+                                  <Text style={{ fontSize: 14, fontWeight: '800', color }}>{term}</Text>
+                                </View>
+                              </View>
+                            )
+                          }))}
                     </View>
                     {riskLevel === 'POSSIBLE_RISK' && (
                       <View style={{ marginTop: 12 }}>

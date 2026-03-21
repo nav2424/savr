@@ -47,20 +47,19 @@ class DynamicPantryRecipeGenerator {
   } = {}): Promise<GeneratedRecipe[]> {
     const { allergies = [], dietaryPreferences = [], householdSize = 2, count = 8 } = options
 
-    console.log('🍳 DynamicPantryRecipeGenerator: Creating recipes from actual pantry items')
-    console.log('📦 Pantry items:', pantryItems.map(item => `${item.name} (${item.quantity} ${item.unit})`))
+    if (__DEV__) console.log('🍳 DynamicPantryRecipeGenerator: Creating recipes from', pantryItems.length, 'pantry items')
 
     if (!pantryItems || pantryItems.length === 0) {
-      console.warn('No pantry items provided')
+      if (__DEV__) console.warn('No pantry items provided')
       return []
     }
 
     // Filter out allergens and dietary restrictions
     const safeItems = this.filterSafeIngredients(pantryItems, allergies, dietaryPreferences)
-    console.log('✅ Safe ingredients:', safeItems.map(item => item.name))
+    if (__DEV__) console.log('✅ Safe ingredients count:', safeItems.length)
 
     if (safeItems.length === 0) {
-      console.warn('No safe ingredients after filtering')
+      if (__DEV__) console.warn('No safe ingredients after filtering')
       return []
     }
 
@@ -87,8 +86,7 @@ class DynamicPantryRecipeGenerator {
     const uniqueRecipes = this.removeDuplicateRecipes(recipes)
     const finalRecipes = uniqueRecipes.slice(0, count)
 
-    console.log(`✨ Generated ${finalRecipes.length} recipes using actual pantry ingredients`)
-    console.log('📋 Recipe titles:', finalRecipes.map(r => r.title))
+    if (__DEV__) console.log(`✨ Generated ${finalRecipes.length} recipes using actual pantry ingredients`)
 
     return finalRecipes
   }

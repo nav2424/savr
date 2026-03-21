@@ -1,6 +1,7 @@
 // Evidence-based Allergen Detection Engine
 // Deterministic, no AI, every alert cites exact match + source
 // Never mark SAFE when ingredients are missing → UNKNOWN
+// EXCEPTION: Plain water is scientifically impossible to be allergenic → always SAFE
 
 import type {
   DetectionInput,
@@ -74,8 +75,30 @@ function normalizeOFFTag(tag: string): string | null {
 }
 
 /**
+ * Plain water products (bottled, mineral, spring, etc.) have zero allergens.
+ * It is scientifically impossible to be allergic to water. Always return SAFE.
+ * Shared by BarcodeService and allergen engine for consistency.
+ */
+export function isPlainWaterProduct(productName: string): boolean {
+  if (!productName?.trim()) return false
+  const n = productName.toLowerCase().trim()
+  const hasWater = /\b(water|eau|aqua|agua|wasser|voda|mineral water|spring water|sparkling water|seltzer|carbonated water|mineralwasser|purified water|distilled water|drinking water|still water|aquafina|evian|dasani|smartwater)\b/.test(n)
+  const hasExclusions = /\b(flavor|flavoured|flavored|juice|soda|lemonade|vitamin|electrolyte|sports drink|energy drink|iced tea|coffee|tea|coconut|coco|fruit)\b/.test(n)
+  return hasWater && !hasExclusions
+}
+
+/**
+ * Ingredients list is ONLY water (no additives). Safe for allergies.
+ */
+function isIngredientsOnlyWater(ingredientsText: string): boolean {
+  const cleaned = ingredientsText.toLowerCase().replace(/^(ingredients?|ingrédients?)\s*[:\.]\s*/i, '').trim()
+  return /^(water|eau|aqua|h2o|agua)$/.test(cleaned)
+}
+
+/**
  * Main detection function - evidence-based, deterministic.
  * NEVER returns SAFE when ingredients_text is missing/empty.
+ * EXCEPTION: Plain water (by product name or ingredients-only-water) → always SAFE.
  */
 export function detectAllergensEvidenceBased(
   input: DetectionInput,
@@ -84,8 +107,38 @@ export function detectAllergensEvidenceBased(
   const { builtin_ids, custom_rules } = userConfig
   const enabledBuiltinIds = builtin_ids.filter(id => getBuiltinById(id))
 
-  // 1. Extract sections from raw text (NO product name - confirmed detection only from ingredients/contains/may_contain)
+  // 0. PLAIN WATER: Scientifically impossible to be allergenic. Always SAFE (even with no ingredient data).
+  if (input.product_name && isPlainWaterProduct(input.product_name)) {
+    return {
+      overall_status: 'SAFE',
+      matched_allergens: [],
+      scan_log: {
+        ingredients_text_used: input.ingredients_text || '',
+        contains_text_used: input.contains_text || '',
+        may_contain_text_used: input.may_contain_text || '',
+        has_ingredient_data: true, // We "know" it's water
+        source_coverage_score: 100,
+      },
+    }
+  }
+
+  // 0b. Ingredients list is ONLY water (water, eau, aqua, etc.) → SAFE
   const ingredientsRaw = input.ingredients_text || ''
+  if (isIngredientsOnlyWater(ingredientsRaw)) {
+    return {
+      overall_status: 'SAFE',
+      matched_allergens: [],
+      scan_log: {
+        ingredients_text_used: ingredientsRaw,
+        contains_text_used: input.contains_text || '',
+        may_contain_text_used: input.may_contain_text || '',
+        has_ingredient_data: true,
+        source_coverage_score: 100,
+      },
+    }
+  }
+
+  // 1. Extract sections from raw text (NO product name - confirmed detection only from ingredients/contains/may_contain)
   const parsed = parseSections(ingredientsRaw)
 
   // 2. Collect OFF structured matches (CONTAINS / MAY_CONTAIN) - these are evidence-based
