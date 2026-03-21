@@ -1,0 +1,3 @@
+Command line invocation:
+    /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -workspace /Users/arnavsaluja/savr/ios/SAVR.xcworkspace -configuration Debug -scheme SAVR -destination id=E70482E3-A2C8-402D-BD75-CC66FBF8FEDC
+

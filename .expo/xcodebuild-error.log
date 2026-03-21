@@ -1,0 +1,6 @@
+2026-03-15 14:43:16.508 xcodebuild[7996:7522799] Writing error result bundle to /var/folders/xx/7dv2vdcd547_j8q2vx9xp1dw0000gn/T/ResultBundle_2026-15-03_14-43-0016.xcresult
+xcodebuild: error: Unable to find a destination matching the provided destination specifier:
+		{ id:E70482E3-A2C8-402D-BD75-CC66FBF8FEDC }
+
+	Ineligible destinations for the "SAVR" scheme:
+		{ platform:iOS, id:dvtdevice-DVTiPhonePlaceholder-iphoneos:placeholder, name:Any iOS Device, error:iOS 26.2 is not installed. Please download and install the platform from Xcode > Settings > Components. }
