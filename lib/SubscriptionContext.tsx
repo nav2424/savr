@@ -2,7 +2,7 @@
  * Subscription Context - Manages RevenueCat subscriptions
  *
  * To enable paywall: set EXPO_PUBLIC_ENABLE_PAYWALL=true (EAS secrets or .env).
- * Entitlement: "pro". Uses RevenueCat hosted paywall only.
+ * Entitlement defaults to "pro" (configurable). Uses RevenueCat hosted paywall only.
  */
 
 import React, {
@@ -26,7 +26,9 @@ import RevenueCatUI, {
 import Purchases from 'react-native-purchases';
 import {
   initializeRevenueCat,
+  getActiveProEntitlement,
   getProStatusWithInfo,
+  selectConfiguredOffering,
   showHostedPaywall as showHostedPaywallLib,
   restoreAndSync as restoreAndSyncLib,
   PRO_ENTITLEMENT,
@@ -35,11 +37,11 @@ import {
 export { PAYWALL_RESULT };
 
 function hasProEntitlement(info: CustomerInfo): boolean {
-  return typeof info.entitlements.active[PRO_ENTITLEMENT] !== 'undefined';
+  return !!getActiveProEntitlement(info);
 }
 
 function getTrialDaysRemaining(info: CustomerInfo): number | null {
-  const pro = info.entitlements.active[PRO_ENTITLEMENT];
+  const pro = getActiveProEntitlement(info);
   if (!pro?.expirationDate) return null;
   const now = new Date();
   const exp = new Date(pro.expirationDate);
@@ -97,11 +99,19 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({
     let cancelled = false;
     const run = async () => {
       try {
-        await initializeRevenueCat();
+        const isConfigured = await initializeRevenueCat();
         if (cancelled) return;
+        if (!isConfigured) {
+          setCurrentOffering(null);
+          setCustomerInfo(null);
+          setIsSubscribed(false);
+          setTrialDaysRemaining(null);
+          return;
+        }
         const offerings = await Purchases.getOfferings();
-        if (offerings.current) {
-          setCurrentOffering(offerings.current);
+        const selectedOffering = selectConfiguredOffering(offerings);
+        if (selectedOffering) {
+          setCurrentOffering(selectedOffering);
         }
         await getSubscriptionStatus();
       } catch (error) {
@@ -123,8 +133,10 @@ export const SubscriptionProvider: React.FC<{ children: ReactNode }> = ({
       setIsSubscribed(hasProEntitlement(info));
       setTrialDaysRemaining(getTrialDaysRemaining(info));
     };
-    const remove = Purchases.addCustomerInfoUpdateListener(listener);
-    return () => { if (typeof remove === 'function') remove(); };
+    Purchases.addCustomerInfoUpdateListener(listener);
+    return () => {
+      Purchases.removeCustomerInfoUpdateListener(listener);
+    };
   }, []);
 
   const purchasePackage = useCallback(

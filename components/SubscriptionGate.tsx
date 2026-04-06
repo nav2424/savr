@@ -6,9 +6,6 @@
  *
  * Shows paywall if user is not subscribed.
  * Allows access during 3-day trial and after subscription.
- *
- * NOTE: In development/Expo Go, paywall is DISABLED for existing users;
- * only new signups (created in last 5 minutes) see the paywall.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -24,7 +21,6 @@ import {
   logPaywallDiagnostics,
 } from '../lib/revenuecat';
 import { PAYWALL_RESULT } from 'react-native-purchases-ui';
-import { supabase } from '../lib/supabase';
 
 interface SubscriptionGateProps {
   children: React.ReactNode;
@@ -35,62 +31,10 @@ export const SubscriptionGate: React.FC<SubscriptionGateProps> = ({ children }) 
   const { isSubscribed, isLoading, getSubscriptionStatus } = useSubscription();
   const segments = useSegments();
   const router = useRouter();
-  const [isNewUser, setIsNewUser] = useState<boolean | null>(null);
-  const [checkingNewUser, setCheckingNewUser] = useState(true);
   const [showingPaywall, setShowingPaywall] = useState(false);
 
-  // Check if user is newly created (within last 5 minutes)
   useEffect(() => {
-    const checkIfNewUser = async () => {
-      if (!user) {
-        setCheckingNewUser(false);
-        return;
-      }
-
-      try {
-        // Get user's auth metadata
-        const { data: authData, error: authError } = await supabase.auth.getUser();
-        
-        // Handle refresh token errors gracefully
-        if (authError) {
-          if (authError.message?.includes('Refresh Token') || authError.message?.includes('refresh_token')) {
-            // Invalid refresh token - assume existing user (don't block access)
-            setIsNewUser(false);
-            setCheckingNewUser(false);
-            return;
-          }
-          // Other auth errors - assume existing user
-          setIsNewUser(false);
-          setCheckingNewUser(false);
-          return;
-        }
-        
-        if (authData.user?.created_at) {
-          const createdAt = new Date(authData.user.created_at);
-          const now = new Date();
-          const minutesSinceCreation = (now.getTime() - createdAt.getTime()) / (1000 * 60);
-          
-          // Consider "new" if created within last 5 minutes
-          setIsNewUser(minutesSinceCreation < 5);
-          
-          if (__DEV__) {
-            console.log(`User created ${minutesSinceCreation.toFixed(1)} minutes ago - ${minutesSinceCreation < 5 ? 'NEW' : 'EXISTING'} user`);
-          }
-        }
-      } catch (error) {
-        console.error('Error checking user creation time:', error);
-        // On error, assume existing user (don't block access)
-        setIsNewUser(false);
-      } finally {
-        setCheckingNewUser(false);
-      }
-    };
-
-    checkIfNewUser();
-  }, [user]);
-
-  useEffect(() => {
-    if (isLoading || checkingNewUser) return;
+    if (isLoading) return;
 
     // Allow these routes without subscription
     const publicRoutes = ['welcome', 'auth', 'onboarding', 'paywall', 'email-verification', 'password-reset'];
@@ -99,11 +43,10 @@ export const SubscriptionGate: React.FC<SubscriptionGateProps> = ({ children }) 
 
     // If user is signed in
     if (user) {
-      // Check if subscribed OR if user is existing (not new)
-      const shouldShowPaywall = !isSubscribed && isNewUser !== false;
+      const shouldShowPaywall = !isSubscribed;
       
       if (shouldShowPaywall && !isPublicRoute) {
-        // Not subscribed AND is a new user - present hosted paywall (handled in render below)
+        // Not subscribed - present hosted paywall (handled in render below)
       }
     } else {
       // Not signed in - send to welcome
@@ -111,10 +54,10 @@ export const SubscriptionGate: React.FC<SubscriptionGateProps> = ({ children }) 
         router.replace('/welcome');
       }
     }
-  }, [user, isSubscribed, isLoading, segments, isNewUser, checkingNewUser]);
+  }, [user, isSubscribed, isLoading, segments, router]);
 
-  // Show loading while checking subscription and user status
-  if (isLoading || checkingNewUser) {
+  // Show loading while checking subscription status
+  if (isLoading) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#6A9571" />
@@ -122,8 +65,8 @@ export const SubscriptionGate: React.FC<SubscriptionGateProps> = ({ children }) 
     );
   }
 
-  // Block access and show Upgrade button for unsubscribed new users
-  const shouldShowPaywall = user && !isSubscribed && isNewUser !== false;
+  // Block access and show Upgrade button for all unsubscribed users
+  const shouldShowPaywall = user && !isSubscribed;
   const currentRoute = segments[segments.length - 1] as string;
   const isPublicRoute = ['welcome', 'auth', 'onboarding', 'paywall', 'email-verification', 'password-reset'].includes(currentRoute);
 
