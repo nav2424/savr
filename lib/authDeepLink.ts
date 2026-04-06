@@ -28,11 +28,21 @@ export function getAuthTokensFromUrl(url: string): { access_token?: string; refr
   try {
     const hashIndex = url.indexOf('#')
     const queryIndex = url.indexOf('?')
-    const part = hashIndex >= 0 ? url.slice(hashIndex + 1) : queryIndex >= 0 ? url.slice(queryIndex + 1) : ''
-    if (!part) return {}
-    const params = new URLSearchParams(part)
-    const access_token = params.get('access_token') ?? undefined
-    const refresh_token = params.get('refresh_token') ?? undefined
+    const queryPart =
+      queryIndex >= 0
+        ? url.slice(queryIndex + 1, hashIndex > queryIndex ? hashIndex : undefined)
+        : ''
+    const hashPart = hashIndex >= 0 ? url.slice(hashIndex + 1) : ''
+    if (!queryPart && !hashPart) return {}
+
+    const queryParams = new URLSearchParams(queryPart)
+    const hashParams = new URLSearchParams(hashPart)
+
+    // Supabase usually sends tokens in hash; keep that priority but support query+hash split URLs.
+    const access_token =
+      hashParams.get('access_token') ?? queryParams.get('access_token') ?? undefined
+    const refresh_token =
+      hashParams.get('refresh_token') ?? queryParams.get('refresh_token') ?? undefined
     return { access_token, refresh_token }
   } catch {
     return {}
